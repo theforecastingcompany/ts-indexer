@@ -1,0 +1,35 @@
+name: australian_electricity_demand
+ts_id:
+  - name: item_id
+    type: str
+    subtype: str
+targets:
+  - name: target
+    type: numeric
+    subtype: float
+covariates:
+  hist: []
+  future: []
+  static: []
+tfc_data_store:
+  future:
+    - name: day_of_week
+      type: numeric
+      subtype: int
+    - name: week_of_year
+      type: numeric
+      subtype: int
+    - name: month_of_year
+      type: numeric
+      subtype: int
+    - name: day_of_month
+      type: numeric
+      subtype: int
+type: public
+description: 'Energy domain dataset with a single long half-hourly time series (prediction
+  length: 48) representing electricity demand for Victoria, Australia in 2014 with
+  17,520 data points. Captures detailed energy consumption patterns throughout the
+  year. Source: R fpp2 package. (Monash Time Series Repository)'
+source: monash
+storage_location: 
+  s3://tfc-modeling-data-eu-west-3/lotsa_long_format/australian_electricity_demand

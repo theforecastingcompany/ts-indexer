@@ -1,0 +1,47 @@
+[package]
+name = "ts-indexer"
+version = "0.1.0"
+edition = "2021"
+description = "High-performance time-series indexer with DuckDB and S3 integration"
+authors = ["The Forecasting Company"]
+
+[dependencies]
+# Database
+duckdb = { version = "1.0", features = ["chrono"] }
+
+# AWS S3
+aws-config = "1.1"
+aws-sdk-s3 = "1.15"
+
+# CLI
+clap = { version = "4.4", features = ["derive"] }
+
+# Async runtime
+tokio = { version = "1.35", features = ["full"] }
+futures = "0.3"
+
+# Data processing
+polars = { version = "0.36", features = ["lazy", "parquet", "csv", "strings", "temporal"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+
+# Search
+fuzzy-matcher = "0.3"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Progress and UI
+indicatif = "0.17"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Utilities
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.6", features = ["v4", "serde"] }

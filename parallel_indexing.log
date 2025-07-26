@@ -1,0 +1,121 @@
+[2m2025-07-26T22:29:32.632757Z[0m [32m INFO[0m [2mts_indexer[0m[2m:[0m Starting TS-Indexer v0.1.0
+[2m2025-07-26T22:29:32.632823Z[0m [32m INFO[0m [2mts_indexer::cli::commands[0m[2m:[0m Starting indexing process...
+[2m2025-07-26T22:29:32.632832Z[0m [32m INFO[0m [2mts_indexer::cli::commands[0m[2m:[0m Bucket: tfc-modeling-data-eu-west-3, Prefix: lotsa_long_format/
+[2m2025-07-26T22:29:32.632846Z[0m [32m INFO[0m [2mts_indexer::cli::commands[0m[2m:[0m Metadata prefix: metadata/lotsa_long_format/
+[2m2025-07-26T22:29:32.632851Z[0m [32m INFO[0m [2mts_indexer::cli::commands[0m[2m:[0m Region: eu-west-3
+[2m2025-07-26T22:29:32.639637Z[0m [32m INFO[0m [2mts_indexer::db[0m[2m:[0m Initializing database schema...
+[2m2025-07-26T22:29:32.641240Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Initializing S3 client for bucket: tfc-modeling-data-eu-west-3 in region: eu-west-3
+[2m2025-07-26T22:29:32.736638Z[0m [32m INFO[0m [2mts_indexer::indexer[0m[2m:[0m Starting parallel indexing process with 8 workers...
+[2m2025-07-26T22:29:32.736666Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Listing objects with prefix: metadata/lotsa_long_format/
+[2m2025-07-26T22:29:32.737138Z[0m [32m INFO[0m [2maws_config::profile::credentials[0m[2m:[0m constructed abstract provider from config file [3mchain[0m[2m=[0mProfileChain { base: AccessKey(Credentials { provider_name: "ProfileFile", access_key_id: "AKIA5V6I7DW5MUJALBGC", secret_access_key: "** redacted **", expires_after: "never" }), chain: [] }
+[2m2025-07-26T22:29:32.737163Z[0m [32m INFO[0m [2maws_config::profile::credentials[0m[2m:[0m loaded base credentials [3mcreds[0m[2m=[0mCredentials { provider_name: "ProfileFile", access_key_id: "AKIA5V6I7DW5MUJALBGC", secret_access_key: "** redacted **", expires_after: "never" }
+[2m2025-07-26T22:29:32.819994Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Found 109 objects
+[2m2025-07-26T22:29:32.820055Z[0m [32m INFO[0m [2mts_indexer::indexer[0m[2m:[0m Found 109 metadata files to process
+[2m2025-07-26T22:29:32.851212Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Listing objects with prefix: lotsa_long_format/alibaba_cluster_trace_2018/
+[2m2025-07-26T22:29:32.877027Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Listing objects with prefix: lotsa_long_format/bdg-2_bear/
+[2m2025-07-26T22:29:32.878086Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Listing objects with prefix: lotsa_long_format/australian_electricity_demand/
+[2m2025-07-26T22:29:32.879007Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Listing objects with prefix: lotsa_long_format/azure_vm_traces_2017/
+[2m2025-07-26T22:29:32.879972Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Listing objects with prefix: lotsa_long_format/bdg-2_fox/
+[2m2025-07-26T22:29:32.886012Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Found 59 objects
+[2m2025-07-26T22:29:32.886055Z[0m [32m INFO[0m [2mts_indexer::indexer[0m[2m:[0m Found 59 data files for dataset: alibaba_cluster_trace_2018
+[2m2025-07-26T22:29:32.886062Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Computing precise statistics for 59 data files
+[2m2025-07-26T22:29:32.889735Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Listing objects with prefix: lotsa_long_format/beijing_subway_30min/
+[2m2025-07-26T22:29:32.903032Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Listing objects with prefix: lotsa_long_format/bdg-2_rat/
+[2m2025-07-26T22:29:32.904196Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Listing objects with prefix: lotsa_long_format/bdg-2_panther/
+[2m2025-07-26T22:29:32.904834Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Found 1 objects
+[2m2025-07-26T22:29:32.904847Z[0m [32m INFO[0m [2mts_indexer::indexer[0m[2m:[0m Found 1 data files for dataset: australian_electricity_demand
+[2m2025-07-26T22:29:32.904852Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Computing precise statistics for 1 data files
+[2m2025-07-26T22:29:32.911341Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Found 0 objects
+[2m2025-07-26T22:29:32.911381Z[0m [32m INFO[0m [2mts_indexer::indexer[0m[2m:[0m Found 0 data files for dataset: beijing_subway_30min
+[2m2025-07-26T22:29:32.911388Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Computing precise statistics for 0 data files
+[2m2025-07-26T22:29:32.922106Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Found 91 objects
+[2m2025-07-26T22:29:32.922135Z[0m [32m INFO[0m [2mts_indexer::indexer[0m[2m:[0m Found 91 data files for dataset: bdg-2_bear
+[2m2025-07-26T22:29:32.922140Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Computing precise statistics for 91 data files
+[2m2025-07-26T22:29:32.925892Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Found 135 objects
+[2m2025-07-26T22:29:32.925917Z[0m [32m INFO[0m [2mts_indexer::indexer[0m[2m:[0m Found 135 data files for dataset: bdg-2_fox
+[2m2025-07-26T22:29:32.925922Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Computing precise statistics for 135 data files
+[2m2025-07-26T22:29:32.926615Z[0m [33m WARN[0m [2maws_sdk_s3::http_response_checksum[0m[2m:[0m This checksum is a part-level checksum which can't be validated by the Rust SDK. Disable checksum validation for this request to fix this warning. [3mmore_info[0m[2m=[0m"See https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity.html#large-object-checksums for more information."
+[2m2025-07-26T22:29:32.932322Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Found 160 objects
+[2m2025-07-26T22:29:32.932355Z[0m [32m INFO[0m [2mts_indexer::indexer[0m[2m:[0m Found 160 data files for dataset: azure_vm_traces_2017
+[2m2025-07-26T22:29:32.932361Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Computing precise statistics for 160 data files
+[2m2025-07-26T22:29:32.940111Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Found 94 objects
+[2m2025-07-26T22:29:32.940135Z[0m [32m INFO[0m [2mts_indexer::indexer[0m[2m:[0m Found 94 data files for dataset: bdg-2_rat
+[2m2025-07-26T22:29:32.940139Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Computing precise statistics for 94 data files
+[2m2025-07-26T22:29:32.942308Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Listing objects with prefix: lotsa_long_format/bitcoin_with_missing/
+[2m2025-07-26T22:29:32.945192Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Found 105 objects
+[2m2025-07-26T22:29:32.945216Z[0m [32m INFO[0m [2mts_indexer::indexer[0m[2m:[0m Found 105 data files for dataset: bdg-2_panther
+[2m2025-07-26T22:29:32.945222Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Computing precise statistics for 105 data files
+[2m2025-07-26T22:29:32.951029Z[0m [33m WARN[0m [2maws_sdk_s3::http_response_checksum[0m[2m:[0m This checksum is a part-level checksum which can't be validated by the Rust SDK. Disable checksum validation for this request to fix this warning. [3mmore_info[0m[2m=[0m"See https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity.html#large-object-checksums for more information."
+[2m2025-07-26T22:29:33.006162Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Found 1 objects
+[2m2025-07-26T22:29:33.006184Z[0m [32m INFO[0m [2mts_indexer::indexer[0m[2m:[0m Found 1 data files for dataset: bitcoin_with_missing
+[2m2025-07-26T22:29:33.006189Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Computing precise statistics for 1 data files
+[2m2025-07-26T22:29:33.018323Z[0m [33m WARN[0m [2maws_sdk_s3::http_response_checksum[0m[2m:[0m This checksum is a part-level checksum which can't be validated by the Rust SDK. Disable checksum validation for this request to fix this warning. [3mmore_info[0m[2m=[0m"See https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity.html#large-object-checksums for more information."
+[2m2025-07-26T22:29:33.332278Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Dataset statistics: 18 unique series, 81918 total records, avg length: 4551.0
+[2m2025-07-26T22:29:33.634021Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Listing objects with prefix: lotsa_long_format/borealis/
+[2m2025-07-26T22:29:33.646441Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Dataset statistics: 91 unique series, 799344 total records, avg length: 8784.0
+[2m2025-07-26T22:29:33.800885Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Found 15 objects
+[2m2025-07-26T22:29:33.800947Z[0m [32m INFO[0m [2mts_indexer::indexer[0m[2m:[0m Found 15 data files for dataset: borealis
+[2m2025-07-26T22:29:33.800959Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Computing precise statistics for 15 data files
+[2m2025-07-26T22:29:33.802992Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Listing objects with prefix: lotsa_long_format/borg_cluster_data_2011/
+[2m2025-07-26T22:29:33.819996Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Dataset statistics: 135 unique series, 1183248 total records, avg length: 8764.8
+[2m2025-07-26T22:29:33.885680Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Found 144 objects
+[2m2025-07-26T22:29:33.885732Z[0m [32m INFO[0m [2mts_indexer::indexer[0m[2m:[0m Found 144 data files for dataset: borg_cluster_data_2011
+[2m2025-07-26T22:29:33.885740Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Computing precise statistics for 144 data files
+[2m2025-07-26T22:29:33.950234Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Listing objects with prefix: lotsa_long_format/cif_2016_12/
+[2m2025-07-26T22:29:33.982363Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Dataset statistics: 105 unique series, 919800 total records, avg length: 8760.0
+[2m2025-07-26T22:29:34.672116Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Listing objects with prefix: lotsa_long_format/cif_2016_6/
+[2m2025-07-26T22:29:34.672702Z[0m [33m WARN[0m [2maws_sdk_s3::http_response_checksum[0m[2m:[0m This checksum is a part-level checksum which can't be validated by the Rust SDK. Disable checksum validation for this request to fix this warning. [3mmore_info[0m[2m=[0m"See https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity.html#large-object-checksums for more information."
+[2m2025-07-26T22:29:34.673216Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Found 1 objects
+[2m2025-07-26T22:29:34.673225Z[0m [32m INFO[0m [2mts_indexer::indexer[0m[2m:[0m Found 1 data files for dataset: cif_2016_12
+[2m2025-07-26T22:29:34.673230Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Computing precise statistics for 1 data files
+[2m2025-07-26T22:29:34.700293Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Found 1 objects
+[2m2025-07-26T22:29:34.700321Z[0m [32m INFO[0m [2mts_indexer::indexer[0m[2m:[0m Found 1 data files for dataset: cif_2016_6
+[2m2025-07-26T22:29:34.700327Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Computing precise statistics for 1 data files
+[2m2025-07-26T22:29:35.137743Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Dataset statistics: 5 unique series, 1153584 total records, avg length: 230716.8
+[2m2025-07-26T22:29:35.139489Z[0m [33m WARN[0m [2maws_sdk_s3::http_response_checksum[0m[2m:[0m This checksum is a part-level checksum which can't be validated by the Rust SDK. Disable checksum validation for this request to fix this warning. [3mmore_info[0m[2m=[0m"See https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity.html#large-object-checksums for more information."
+[2m2025-07-26T22:29:35.141486Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Dataset statistics: 15 unique series, 633 total records, avg length: 42.2
+[2m2025-07-26T22:29:35.147094Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Dataset statistics: 57 unique series, 5701 total records, avg length: 100.0
+[2m2025-07-26T22:29:35.172593Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Dataset statistics: 282 unique series, 2470320 total records, avg length: 8760.0
+[2m2025-07-26T22:29:35.188505Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Listing objects with prefix: lotsa_long_format/cmip6_1850/
+[2m2025-07-26T22:29:35.304633Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Listing objects with prefix: lotsa_long_format/cmip6_1860/
+[2m2025-07-26T22:29:35.306931Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Listing objects with prefix: lotsa_long_format/cmip6_1855/
+[2m2025-07-26T22:29:35.309008Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Listing objects with prefix: lotsa_long_format/cmip6_1865/
+[2m2025-07-26T22:29:35.368490Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Found 9 objects
+[2m2025-07-26T22:29:35.368529Z[0m [32m INFO[0m [2mts_indexer::indexer[0m[2m:[0m Found 9 data files for dataset: cmip6_1850
+[2m2025-07-26T22:29:35.368538Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Computing precise statistics for 9 data files
+[2m2025-07-26T22:29:35.488635Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Found 9 objects
+[2m2025-07-26T22:29:35.488699Z[0m [32m INFO[0m [2mts_indexer::indexer[0m[2m:[0m Found 9 data files for dataset: cmip6_1860
+[2m2025-07-26T22:29:35.488714Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Computing precise statistics for 9 data files
+[2m2025-07-26T22:29:35.490687Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Found 9 objects
+[2m2025-07-26T22:29:35.490710Z[0m [32m INFO[0m [2mts_indexer::indexer[0m[2m:[0m Found 9 data files for dataset: cmip6_1865
+[2m2025-07-26T22:29:35.490719Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Computing precise statistics for 9 data files
+[2m2025-07-26T22:29:35.492476Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Found 9 objects
+[2m2025-07-26T22:29:35.492493Z[0m [32m INFO[0m [2mts_indexer::indexer[0m[2m:[0m Found 9 data files for dataset: cmip6_1855
+[2m2025-07-26T22:29:35.492502Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Computing precise statistics for 9 data files
+[2m2025-07-26T22:29:35.499205Z[0m [33m WARN[0m [2maws_sdk_s3::http_response_checksum[0m[2m:[0m This checksum is a part-level checksum which can't be validated by the Rust SDK. Disable checksum validation for this request to fix this warning. [3mmore_info[0m[2m=[0m"See https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity.html#large-object-checksums for more information."
+[2m2025-07-26T22:29:35.513295Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Dataset statistics: 15 unique series, 103116 total records, avg length: 6874.4
+[2m2025-07-26T22:29:36.195637Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Listing objects with prefix: lotsa_long_format/cmip6_1870/
+[2m2025-07-26T22:29:36.196221Z[0m [33m WARN[0m [2maws_sdk_s3::http_response_checksum[0m[2m:[0m This checksum is a part-level checksum which can't be validated by the Rust SDK. Disable checksum validation for this request to fix this warning. [3mmore_info[0m[2m=[0m"See https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity.html#large-object-checksums for more information."
+[2m2025-07-26T22:29:36.196425Z[0m [33m WARN[0m [2maws_sdk_s3::http_response_checksum[0m[2m:[0m This checksum is a part-level checksum which can't be validated by the Rust SDK. Disable checksum validation for this request to fix this warning. [3mmore_info[0m[2m=[0m"See https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity.html#large-object-checksums for more information."
+[2m2025-07-26T22:29:36.196608Z[0m [33m WARN[0m [2maws_sdk_s3::http_response_checksum[0m[2m:[0m This checksum is a part-level checksum which can't be validated by the Rust SDK. Disable checksum validation for this request to fix this warning. [3mmore_info[0m[2m=[0m"See https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity.html#large-object-checksums for more information."
+[2m2025-07-26T22:29:36.321513Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Found 9 objects
+[2m2025-07-26T22:29:36.321553Z[0m [32m INFO[0m [2mts_indexer::indexer[0m[2m:[0m Found 9 data files for dataset: cmip6_1870
+[2m2025-07-26T22:29:36.321561Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Computing precise statistics for 9 data files
+[2m2025-07-26T22:29:36.333425Z[0m [33m WARN[0m [2maws_sdk_s3::http_response_checksum[0m[2m:[0m This checksum is a part-level checksum which can't be validated by the Rust SDK. Disable checksum validation for this request to fix this warning. [3mmore_info[0m[2m=[0m"See https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity.html#large-object-checksums for more information."
+[2m2025-07-26T22:29:36.579944Z[0m [33m WARN[0m [2maws_sdk_s3::http_response_checksum[0m[2m:[0m This checksum is a part-level checksum which can't be validated by the Rust SDK. Disable checksum validation for this request to fix this warning. [3mmore_info[0m[2m=[0m"See https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity.html#large-object-checksums for more information."
+[2m2025-07-26T22:29:39.382831Z[0m [33m WARN[0m [2maws_sdk_s3::http_response_checksum[0m[2m:[0m This checksum is a part-level checksum which can't be validated by the Rust SDK. Disable checksum validation for this request to fix this warning. [3mmore_info[0m[2m=[0m"See https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity.html#large-object-checksums for more information."
+[2m2025-07-26T22:29:41.975355Z[0m [33m WARN[0m [2maws_sdk_s3::http_response_checksum[0m[2m:[0m This checksum is a part-level checksum which can't be validated by the Rust SDK. Disable checksum validation for this request to fix this warning. [3mmore_info[0m[2m=[0m"See https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity.html#large-object-checksums for more information."
+[2m2025-07-26T22:29:44.286384Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Dataset statistics: 59000 unique series, 96159875 total records, avg length: 1629.8
+[2m2025-07-26T22:29:44.426824Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Listing objects with prefix: lotsa_long_format/cmip6_1875/
+[2m2025-07-26T22:29:44.563565Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Found 9 objects
+[2m2025-07-26T22:29:44.563726Z[0m [32m INFO[0m [2mts_indexer::indexer[0m[2m:[0m Found 9 data files for dataset: cmip6_1875
+[2m2025-07-26T22:29:44.563814Z[0m [32m INFO[0m [2mts_indexer::s3[0m[2m:[0m Computing precise statistics for 9 data files
+[2m2025-07-26T22:29:44.834835Z[0m [33m WARN[0m [2maws_sdk_s3::http_response_checksum[0m[2m:[0m This checksum is a part-level checksum which can't be validated by the Rust SDK. Disable checksum validation for this request to fix this warning. [3mmore_info[0m[2m=[0m"See https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity.html#large-object-checksums for more information."
+[2m2025-07-26T22:29:56.762482Z[0m [33m WARN[0m [2maws_sdk_s3::http_response_checksum[0m[2m:[0m This checksum is a part-level checksum which can't be validated by the Rust SDK. Disable checksum validation for this request to fix this warning. [3mmore_info[0m[2m=[0m"See https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity.html#large-object-checksums for more information."
+[2m2025-07-26T22:30:14.424616Z[0m [33m WARN[0m [2maws_sdk_s3::http_response_checksum[0m[2m:[0m This checksum is a part-level checksum which can't be validated by the Rust SDK. Disable checksum validation for this request to fix this warning. [3mmore_info[0m[2m=[0m"See https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity.html#large-object-checksums for more information."
+[2m2025-07-26T22:30:34.719170Z[0m [33m WARN[0m [2maws_sdk_s3::http_response_checksum[0m[2m:[0m This checksum is a part-level checksum which can't be validated by the Rust SDK. Disable checksum validation for this request to fix this warning. [3mmore_info[0m[2m=[0m"See https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity.html#large-object-checksums for more information."
+[2m2025-07-26T22:30:42.852705Z[0m [33m WARN[0m [2maws_sdk_s3::http_response_checksum[0m[2m:[0m This checksum is a part-level checksum which can't be validated by the Rust SDK. Disable checksum validation for this request to fix this warning. [3mmore_info[0m[2m=[0m"See https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity.html#large-object-checksums for more information."
+[2m2025-07-26T22:31:12.692104Z[0m [33m WARN[0m [2maws_sdk_s3::http_response_checksum[0m[2m:[0m This checksum is a part-level checksum which can't be validated by the Rust SDK. Disable checksum validation for this request to fix this warning. [3mmore_info[0m[2m=[0m"See https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity.html#large-object-checksums for more information."
+[2m2025-07-26T22:31:21.137243Z[0m [33m WARN[0m [2maws_sdk_s3::http_response_checksum[0m[2m:[0m This checksum is a part-level checksum which can't be validated by the Rust SDK. Disable checksum validation for this request to fix this warning. [3mmore_info[0m[2m=[0m"See https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity.html#large-object-checksums for more information."
+[2m2025-07-26T22:31:58.589388Z[0m [33m WARN[0m [2maws_sdk_s3::http_response_checksum[0m[2m:[0m This checksum is a part-level checksum which can't be validated by the Rust SDK. Disable checksum validation for this request to fix this warning. [3mmore_info[0m[2m=[0m"See https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity.html#large-object-checksums for more information."
+[2m2025-07-26T22:31:58.796891Z[0m [33m WARN[0m [2maws_sdk_s3::http_response_checksum[0m[2m:[0m This checksum is a part-level checksum which can't be validated by the Rust SDK. Disable checksum validation for this request to fix this warning. [3mmore_info[0m[2m=[0m"See https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity.html#large-object-checksums for more information."
