@@ -17,12 +17,13 @@ pub struct TimeSeriesRecord {
     pub id: Uuid,
     pub series_id: String,
     pub dataset_id: String,
+    pub column_name: String,
     pub timestamp: DateTime<Utc>,
     pub value: f64,
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SeriesMetadata {
     pub series_id: String,
     pub dataset_id: String,
@@ -129,6 +130,7 @@ impl Database {
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 series_id VARCHAR NOT NULL,
                 dataset_id VARCHAR NOT NULL,
+                column_name VARCHAR NOT NULL,
                 timestamp BIGINT NOT NULL,
                 value DOUBLE NOT NULL,
                 created_at BIGINT NOT NULL
@@ -138,6 +140,7 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_time_series_dataset_id ON time_series(dataset_id);
             CREATE INDEX IF NOT EXISTS idx_time_series_timestamp ON time_series(timestamp);
             CREATE INDEX IF NOT EXISTS idx_time_series_composite ON time_series(series_id, timestamp);
+            CREATE INDEX IF NOT EXISTS idx_time_series_column ON time_series(series_id, column_name);
         "#)?;
         
         // Series metadata with full-text search capabilities
@@ -281,6 +284,20 @@ impl Database {
         Ok(())
     }
     
+    /// Delete all series metadata for a specific dataset
+    pub fn delete_series_metadata_for_dataset(&self, dataset_id: &str) -> Result<usize> {
+        let rows_deleted = self.conn.lock().unwrap().execute(
+            "DELETE FROM series_metadata WHERE dataset_id = ?",
+            duckdb::params![dataset_id],
+        )?;
+        
+        if rows_deleted > 0 {
+            debug!("Deleted {} existing series metadata records for dataset: {}", rows_deleted, dataset_id);
+        }
+        
+        Ok(rows_deleted)
+    }
+
     /// Insert series metadata
     pub fn insert_series_metadata(&self, metadata: &SeriesMetadata) -> Result<()> {
         self.conn.lock().unwrap().execute(
@@ -312,14 +329,15 @@ impl Database {
         
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "INSERT INTO time_series (series_id, dataset_id, timestamp, value, created_at) 
-             VALUES (?, ?, ?, ?, ?)"
+            "INSERT INTO time_series (series_id, dataset_id, column_name, timestamp, value, created_at) 
+             VALUES (?, ?, ?, ?, ?, ?)"
         )?;
         
         for record in records {
             stmt.execute(duckdb::params![
                 record.series_id,
                 record.dataset_id,
+                record.column_name,
                 record.timestamp.timestamp(),
                 record.value,
                 record.created_at.timestamp()
@@ -603,6 +621,206 @@ impl Database {
         
         Ok(progress)
     }
+
+    /// Get a dataset by ID with full metadata
+    pub fn get_dataset_by_id(&self, dataset_id: &str) -> Result<Option<Dataset>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(r#"
+            SELECT dataset_id, name, description, source_bucket, source_prefix,
+                   schema_version, dataset_type, source, storage_location,
+                   item_id_type, target_type, tfc_features, total_series,
+                   total_records, series_id_columns, avg_series_length,
+                   min_series_length, max_series_length, indexing_status,
+                   indexing_started_at, indexing_completed_at, indexing_error,
+                   metadata_file_path, data_file_count, created_at, updated_at
+            FROM datasets WHERE dataset_id = ?
+        "#)?;
+
+        let mut rows = stmt.query_map([dataset_id], |row| {
+            Ok(Dataset {
+                dataset_id: row.get(0)?,
+                name: row.get(1)?,
+                description: row.get(2)?,
+                source_bucket: row.get(3)?,
+                source_prefix: row.get(4)?,
+                schema_version: row.get(5)?,
+                dataset_type: row.get(6)?,
+                source: row.get(7)?,
+                storage_location: row.get(8)?,
+                item_id_type: row.get(9)?,
+                target_type: row.get(10)?,
+                tfc_features: row.get(11)?,
+                total_series: row.get(12)?,
+                total_records: row.get(13)?,
+                series_id_columns: row.get(14)?,
+                avg_series_length: row.get(15)?,
+                min_series_length: row.get(16)?,
+                max_series_length: row.get(17)?,
+                indexing_status: IndexingStatus::from(row.get::<_, String>(18)?.as_str()),
+                indexing_started_at: row.get::<_, Option<i64>>(19)?.map(|ts| DateTime::from_timestamp(ts, 0).unwrap()),
+                indexing_completed_at: row.get::<_, Option<i64>>(20)?.map(|ts| DateTime::from_timestamp(ts, 0).unwrap()),
+                indexing_error: row.get(21)?,
+                metadata_file_path: row.get(22)?,
+                data_file_count: row.get(23)?,
+                created_at: DateTime::from_timestamp(row.get::<_, i64>(24)?, 0).unwrap(),
+                updated_at: DateTime::from_timestamp(row.get::<_, i64>(25)?, 0).unwrap(),
+            })
+        })?;
+
+        match rows.next() {
+            Some(Ok(dataset)) => Ok(Some(dataset)),
+            Some(Err(e)) => Err(e.into()),
+            None => Ok(None)
+        }
+    }
+
+    /// Get column metadata for a dataset by parsing the stored TFC features
+    pub fn get_dataset_column_metadata(&self, dataset_id: &str) -> Result<Option<DatasetColumnInfo>> {
+        if let Some(dataset) = self.get_dataset_by_id(dataset_id)? {
+            if let Some(tfc_features_json) = dataset.tfc_features {
+                // Parse the JSON to get the metadata structure
+                let dataset_metadata: crate::s3::DatasetMetadata = serde_json::from_str(&tfc_features_json)?;
+                
+                let mut columns = Vec::new();
+                
+                // Add target columns (for now, use "target" as the name since FieldInfo doesn't have name)
+                if let Some(target) = dataset_metadata.target {
+                    columns.push(ColumnMetadata {
+                        name: "target".to_string(), // TODO: Get actual target column name from metadata
+                        column_type: ColumnType::Target,
+                        data_type: target.field_type,
+                        description: None, // FieldInfo doesn't have description
+                    });
+                }
+                
+                // Add covariate columns
+                if let Some(covariates) = dataset_metadata.covariates {
+                    // Historical covariates
+                    for hist_col in covariates.hist {
+                        columns.push(ColumnMetadata {
+                            name: hist_col,
+                            column_type: ColumnType::HistoricalCovariate,
+                            data_type: "float".to_string(), // Default type
+                            description: None,
+                        });
+                    }
+                    
+                    // Static covariates
+                    for static_col in covariates.static_vars {
+                        columns.push(ColumnMetadata {
+                            name: static_col,
+                            column_type: ColumnType::StaticCovariate,
+                            data_type: "mixed".to_string(), // Static can be any type
+                            description: None,
+                        });
+                    }
+                    
+                    // Future covariates
+                    for future_col in covariates.future {
+                        columns.push(ColumnMetadata {
+                            name: future_col,
+                            column_type: ColumnType::FutureCovariate,
+                            data_type: "float".to_string(), // Default type
+                            description: None,
+                        });
+                    }
+                }
+                
+                return Ok(Some(DatasetColumnInfo {
+                    dataset_id: dataset_id.to_string(),
+                    dataset_name: dataset_metadata.name,
+                    columns,
+                }));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Get series metadata with associated dataset column information
+    pub fn get_series_with_column_metadata(&self, series_id: &str) -> Result<Option<SeriesWithColumnInfo>> {
+        // First get the series metadata
+        let series_metadata = self.get_series_by_id(series_id)?;
+        
+        if let Some(series) = series_metadata {
+            // Get column metadata for the dataset
+            let column_info = self.get_dataset_column_metadata(&series.dataset_id)?;
+            
+            return Ok(Some(SeriesWithColumnInfo {
+                series_metadata: series,
+                column_info,
+            }));
+        }
+        
+        Ok(None)
+    }
+
+    /// Get series metadata by ID
+    pub fn get_series_by_id(&self, series_id: &str) -> Result<Option<SeriesMetadata>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(r#"
+            SELECT series_id, dataset_id, theme, description, tags, source_file,
+                   first_timestamp, last_timestamp, record_count, created_at
+            FROM series_metadata WHERE series_id = ?
+        "#)?;
+
+        let mut rows = stmt.query_map([series_id], |row| {
+            Ok(SeriesMetadata {
+                series_id: row.get(0)?,
+                dataset_id: row.get(1)?,
+                theme: row.get(2)?,
+                description: row.get(3)?,
+                tags: serde_json::from_str(&row.get::<_, String>(4)?).unwrap_or_default(),
+                source_file: row.get(5)?,
+                first_timestamp: DateTime::from_timestamp(row.get::<_, i64>(6)?, 0).unwrap(),
+                last_timestamp: DateTime::from_timestamp(row.get::<_, i64>(7)?, 0).unwrap(),
+                record_count: row.get(8)?,
+                created_at: DateTime::from_timestamp(row.get::<_, i64>(9)?, 0).unwrap(),
+            })
+        })?;
+
+        match rows.next() {
+            Some(Ok(series)) => Ok(Some(series)),
+            Some(Err(e)) => Err(e.into()),
+            None => Ok(None)
+        }
+    }
+
+    /// Get time series data points for plotting
+    pub fn get_time_series_data(&self, series_id: &str, column_name: &str, limit: Option<usize>) -> Result<Vec<TimeSeriesPoint>> {
+        let conn = self.conn.lock().unwrap();
+        
+        let query = if let Some(limit) = limit {
+            format!(r#"
+                SELECT timestamp, value
+                FROM time_series 
+                WHERE series_id = ? AND column_name = ?
+                ORDER BY timestamp
+                LIMIT {}
+            "#, limit)
+        } else {
+            r#"
+                SELECT timestamp, value
+                FROM time_series 
+                WHERE series_id = ? AND column_name = ?
+                ORDER BY timestamp
+            "#.to_string()
+        };
+
+        let mut stmt = conn.prepare(&query)?;
+        let rows = stmt.query_map([series_id, column_name], |row| {
+            Ok(TimeSeriesPoint {
+                timestamp: DateTime::from_timestamp(row.get::<_, i64>(0)?, 0).unwrap(),
+                value: row.get::<_, f64>(1)?,
+            })
+        })?;
+
+        let mut data_points = Vec::new();
+        for row in rows {
+            data_points.push(row?);
+        }
+
+        Ok(data_points)
+    }
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -637,7 +855,7 @@ pub struct DatabaseStats {
     pub latest_timestamp: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SearchResult {
     pub series_id: String,
     pub dataset_id: String,
@@ -648,4 +866,44 @@ pub struct SearchResult {
     pub record_count: i64,
     pub first_timestamp: DateTime<Utc>,
     pub last_timestamp: DateTime<Utc>,
+}
+
+/// Column metadata for hierarchical browsing
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ColumnMetadata {
+    pub name: String,
+    pub column_type: ColumnType,
+    pub data_type: String,
+    pub description: Option<String>,
+}
+
+/// Types of columns available in datasets
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum ColumnType {
+    Target,
+    HistoricalCovariate,
+    StaticCovariate,
+    FutureCovariate,
+}
+
+/// Dataset column information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DatasetColumnInfo {
+    pub dataset_id: String,
+    pub dataset_name: String,
+    pub columns: Vec<ColumnMetadata>,
+}
+
+/// Series metadata with associated column information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SeriesWithColumnInfo {
+    pub series_metadata: SeriesMetadata,
+    pub column_info: Option<DatasetColumnInfo>,
+}
+
+/// Time series data point for plotting
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimeSeriesPoint {
+    pub timestamp: DateTime<Utc>,
+    pub value: f64,
 }

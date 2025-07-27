@@ -2,6 +2,7 @@ use anyhow::Result;
 use chrono::Utc;
 use futures::stream::{self, StreamExt};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
@@ -10,6 +11,7 @@ use tokio::select;
 use tracing::{info, warn, debug, error};
 
 use crate::db::{Database, Dataset, IndexingStatus};
+use crate::monitoring::get_global_monitor;
 use crate::progress::IndexerProgress;
 use crate::s3::S3Client;
 
@@ -32,6 +34,7 @@ pub struct DatasetTask {
     pub data_prefix: String,
     pub index: usize,
     pub total: usize,
+    pub directory_mapping: std::collections::HashMap<String, String>,
 }
 
 #[derive(Debug)]
@@ -70,7 +73,7 @@ impl Indexer {
         max_files: Option<usize>,
         max_concurrent: usize,
     ) -> Result<IndexingStats> {
-        self.index_data_parallel_with_resume(data_prefix, metadata_prefix, max_files, max_concurrent, false).await
+        self.index_data_parallel_with_resume(data_prefix, metadata_prefix, max_files, max_concurrent, false, None, false).await
     }
     
     /// Parallel indexing with graceful shutdown and explicit resume control
@@ -81,9 +84,17 @@ impl Indexer {
         max_files: Option<usize>,
         max_concurrent: usize,
         force_reindex: bool,
+        dataset_filter: Option<&str>,
+        enable_monitoring: bool,
     ) -> Result<IndexingStats> {
         let start_time = Instant::now();
         info!("Starting resumable parallel indexing process with {} workers...", max_concurrent);
+        
+        // Initialize monitoring if enabled
+        if enable_monitoring {
+            let monitor = get_global_monitor();
+            monitor.log_system_summary("indexing_start");
+        }
         
         // Set up graceful shutdown handling
         let shutdown_signal = Arc::new(AtomicBool::new(false));
@@ -124,7 +135,28 @@ impl Indexer {
         let total_available_datasets = metadata_files.len();
         info!("Found {} metadata files available for indexing", total_available_datasets);
         
-        // Apply max_files limit AFTER discovery but BEFORE processing
+        // Apply dataset filter if provided
+        if let Some(filter_str) = dataset_filter {
+            let filter_names: Vec<&str> = filter_str.split(',').map(|s| s.trim()).collect();
+            info!("Applying dataset filter for: {:?}", filter_names);
+            
+            metadata_files.retain(|obj| {
+                let dataset_name = self.extract_dataset_name_from_metadata_key(&obj.key);
+                let matches = filter_names.iter().any(|&filter_name| {
+                    dataset_name.contains(filter_name) || filter_name.contains(&dataset_name)
+                });
+                if matches {
+                    debug!("Including dataset: {} (matches filter)", dataset_name);
+                } else {
+                    debug!("Excluding dataset: {} (doesn't match filter)", dataset_name);
+                }
+                matches
+            });
+            
+            info!("After filtering: {} datasets match the filter criteria", metadata_files.len());
+        }
+        
+        // Apply max_files limit AFTER discovery and filtering but BEFORE processing
         if let Some(max) = max_files {
             if metadata_files.len() > max {
                 info!("Limiting processing to first {} datasets (out of {} available)", max, metadata_files.len());
@@ -231,7 +263,13 @@ impl Indexer {
                 .unwrap()
                 .progress_chars("##-")
         );
-        main_progress.set_message("Starting...");
+        main_progress.set_message("Computing directory mappings...");
+        
+        // Pre-compute directory mapping to prevent race conditions in parallel processing
+        let directory_mapping = self.s3_client.compute_dataset_directory_mapping(data_prefix).await?;
+        info!("📁 Pre-computed directory mapping for {} datasets", directory_mapping.len());
+        
+        main_progress.set_message("Creating tasks...");
         
         // Create tasks for parallel processing
         let tasks: Vec<DatasetTask> = datasets_to_process
@@ -242,14 +280,29 @@ impl Indexer {
                 data_prefix: data_prefix.to_string(),
                 index,
                 total: total_datasets,
+                directory_mapping: directory_mapping.clone(),
             })
             .collect();
         
         // Create shared indexer instance
         let indexer = Arc::new(Indexer::new(self.db.clone(), self.s3_client.clone()));
         
-        // Use semaphore to limit concurrent processing
-        let semaphore = Arc::new(Semaphore::new(max_concurrent));
+        // Memory-aware dataset concurrency adjustment
+        let monitor = get_global_monitor();
+        let memory_pressure = monitor.memory_pressure();
+        let adjusted_concurrency = if memory_pressure > 0.85 {
+            warn!("🔴 High memory pressure detected ({:.1}%), reducing dataset concurrency", memory_pressure * 100.0);
+            std::cmp::min(max_concurrent, 2) // Cap at 2 concurrent datasets under pressure
+        } else if memory_pressure > 0.70 {
+            warn!("🟡 Moderate memory pressure ({:.1}%), limiting dataset concurrency", memory_pressure * 100.0);
+            std::cmp::min(max_concurrent, 4) // Cap at 4 concurrent datasets
+        } else {
+            info!("🟢 Memory pressure normal ({:.1}%), using full concurrency={}", memory_pressure * 100.0, max_concurrent);
+            max_concurrent
+        };
+        
+        // Use semaphore to limit concurrent processing with memory awareness
+        let semaphore = Arc::new(Semaphore::new(adjusted_concurrency));
         
         // Process datasets in parallel with progress tracking and graceful shutdown
         let mut results = Vec::new();
@@ -278,13 +331,28 @@ impl Indexer {
                     // Extract dataset name for status tracking
                     let dataset_name = indexer.extract_dataset_name_from_metadata_key(&task.metadata_key);
                     
+                    // Check memory pressure before starting dataset processing
+                    let monitor = get_global_monitor();
+                    if monitor.is_under_pressure() {
+                        warn!("⚠️  High system pressure detected before processing {}, proceeding with caution", dataset_name);
+                        // Could add delay or additional throttling here if needed
+                    }
+                    
+                    // Start dataset monitoring if enabled
+                    let dataset_metrics = if enable_monitoring {
+                        let monitor = get_global_monitor();
+                        Some(monitor.start_operation(format!("dataset_{}", dataset_name)))
+                    } else {
+                        None
+                    };
+                    
                     // Mark as started
                     if let Err(e) = indexer.db.mark_dataset_started(&dataset_name) {
                         warn!("Failed to mark dataset {} as started: {}", dataset_name, e);
                     }
                     
                     let result = indexer
-                        .process_metadata_file(&task.metadata_key, &task.data_prefix)
+                        .process_metadata_file(&task.metadata_key, &task.data_prefix, &task.directory_mapping)
                         .await;
                     
                     let dataset_result = match result {
@@ -337,6 +405,12 @@ impl Indexer {
                         }
                     };
                     
+                    // Finish dataset monitoring if enabled
+                    if let Some(metrics) = dataset_metrics {
+                        let monitor = get_global_monitor();
+                        monitor.finish_operation(metrics);
+                    }
+                    
                     progress.inc(1);
                     dataset_result
                 }
@@ -361,12 +435,14 @@ impl Indexer {
         // Aggregate statistics
         let mut datasets_processed = 0;
         let mut series_count = 0i64;
+        let mut records_count = 0i64;
         let mut errors = 0;
         
         for result in results {
             if let Some(dataset) = result.dataset {
                 datasets_processed += 1;
                 series_count += dataset.total_series;
+                records_count += dataset.total_records;
                 info!("Successfully processed dataset: {}", dataset.name);
             } else if let Some(error) = result.error {
                 errors += 1;
@@ -399,28 +475,38 @@ impl Indexer {
         }
         progress_tracker.cleanup_on_shutdown();
         
+        // Final monitoring summary if enabled
+        if enable_monitoring {
+            let monitor = get_global_monitor();
+            monitor.log_system_summary("indexing_complete");
+        }
+        
         let stats = IndexingStats {
             files_processed: datasets_processed,
             series_indexed: series_count as usize,
-            records_indexed: series_count as usize,
+            records_indexed: records_count as usize,
             errors,
             processing_time_ms: start_time.elapsed().as_millis(),
         };
         Ok(stats)
     }
     
-    async fn process_metadata_file(&self, metadata_key: &str, data_prefix: &str) -> Result<Dataset> {
+    async fn process_metadata_file(&self, metadata_key: &str, data_prefix: &str, directory_mapping: &HashMap<String, String>) -> Result<Dataset> {
         debug!("Processing metadata file: {}", metadata_key);
         
         // Download and parse metadata
         let metadata = self.s3_client.download_and_parse_metadata(metadata_key).await?;
         
-        // Find the correct case-sensitive directory name for this dataset
+        // Find the correct case-sensitive directory name for this dataset using pre-computed mapping
         let dataset_name = &metadata.name;
-        let actual_dir_name = match self.s3_client.find_case_sensitive_dataset_dir(data_prefix, dataset_name).await? {
-            Some(dir_name) => dir_name,
+        let actual_dir_name = match self.s3_client.find_dataset_dir_from_mapping(dataset_name, directory_mapping) {
+            Some(dir_name) => {
+                debug!("✅ Mapped dataset '{}' -> directory '{}'", dataset_name, dir_name);
+                dir_name
+            },
             None => {
-                warn!("No data directory found for dataset: {} (skipping)", dataset_name);
+                warn!("No data directory found for dataset: {} in pre-computed mapping (skipping)", dataset_name);
+                debug!("Available directories in mapping: {:?}", directory_mapping.keys().collect::<Vec<_>>());
                 return Err(anyhow::anyhow!("No data directory found for dataset: {}", dataset_name));
             }
         };
@@ -443,6 +529,7 @@ impl Indexer {
                     min_series_length: 1000,
                     max_series_length: 1000,
                     series_id_columns: vec!["item_id".to_string()],
+                    individual_series: vec![], // No individual series info available
                 }
             });
         
@@ -480,6 +567,29 @@ impl Indexer {
         
         // Insert dataset into database
         self.db.insert_dataset(&dataset)?;
+        
+        // Clean up existing series metadata for this dataset to avoid collisions
+        info!("Cleaning up existing series metadata for dataset: {}", dataset.dataset_id);
+        self.db.delete_series_metadata_for_dataset(&dataset.dataset_id)?;
+        
+        // Insert individual series metadata records
+        info!("Inserting {} individual series metadata records", stats.individual_series.len());
+        for series_info in &stats.individual_series {
+            let series_metadata = crate::db::SeriesMetadata {
+                series_id: format!("{}:{}", dataset.dataset_id, series_info.series_id),
+                dataset_id: dataset.dataset_id.clone(),
+                theme: metadata.dataset_type.clone(), // Use dataset type as theme
+                description: metadata.description.clone(),
+                tags: vec![], // Could be enhanced with more metadata
+                source_file: series_info.source_files.join(";"), // Join multiple files
+                first_timestamp: Utc::now(), // TODO: Extract actual timestamps
+                last_timestamp: Utc::now(),  // TODO: Extract actual timestamps
+                record_count: series_info.record_count,
+                created_at: Utc::now(),
+            };
+            
+            self.db.insert_series_metadata(&series_metadata)?;
+        }
         
         Ok(dataset)
     }

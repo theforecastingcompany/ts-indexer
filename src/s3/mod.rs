@@ -10,6 +10,8 @@ use std::io::Cursor;
 use tokio::io::AsyncReadExt;
 use tracing::{debug, info, warn};
 
+use crate::monitoring::get_global_monitor;
+
 #[derive(Clone)]
 pub struct S3Client {
     client: Client,
@@ -84,6 +86,15 @@ pub struct SeriesStatistics {
     pub min_series_length: i64,
     pub max_series_length: i64,
     pub series_id_columns: Vec<String>,
+    // New: Individual series information for indexing
+    pub individual_series: Vec<IndividualSeriesInfo>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct IndividualSeriesInfo {
+    pub series_id: String,
+    pub record_count: i64,
+    pub source_files: Vec<String>, // Files where this series appears
 }
 
 impl S3Client {
@@ -383,17 +394,38 @@ impl S3Client {
             .and_then(|t| t.as_str())
             .map(|s| FieldInfo { field_type: s.to_string() });
         
-        // Extract TFC features
+        // Extract TFC features from both old and new schema formats
         let tfc_features = metadata.get("tfc_data_store_features")
+            .or_else(|| metadata.get("tfc_data_store"))
             .and_then(|f| f.as_mapping())
             .map(|features| {
-                features.iter()
-                    .filter_map(|(k, v)| {
-                        let key = k.as_str()?.to_string();
-                        let field_type = v.get("type")?.as_str()?.to_string();
-                        Some((key, FieldInfo { field_type }))
-                    })
-                    .collect::<HashMap<String, FieldInfo>>()
+                let mut result = HashMap::new();
+                
+                // Handle both formats: direct mapping and nested future/hist structure
+                if let Some(future) = features.get("future").and_then(|f| f.as_sequence()) {
+                    for item in future {
+                        if let (Some(name), Some(field_type)) = (
+                            item.get("name").and_then(|n| n.as_str()),
+                            item.get("type").and_then(|t| t.as_str())
+                        ) {
+                            result.insert(name.to_string(), FieldInfo { field_type: field_type.to_string() });
+                        }
+                    }
+                }
+                
+                // Also handle direct field mappings
+                for (k, v) in features.iter() {
+                    if k.as_str() != Some("future") && k.as_str() != Some("hist") {
+                        if let (Some(key), Some(field_type)) = (
+                            k.as_str(),
+                            v.get("type").and_then(|t| t.as_str())
+                        ) {
+                            result.insert(key.to_string(), FieldInfo { field_type: field_type.to_string() });
+                        }
+                    }
+                }
+                
+                result
             });
         
         // Extract ts_id information
@@ -486,6 +518,49 @@ impl S3Client {
         Ok(None)
     }
 
+    /// Pre-compute directory mapping for all datasets to avoid race conditions in parallel processing
+    pub async fn compute_dataset_directory_mapping(&self, data_prefix: &str) -> Result<HashMap<String, String>> {
+        info!("Computing dataset directory mapping for prefix: {}", data_prefix);
+        
+        // List all directories in the data prefix once
+        let objects = self.list_objects(data_prefix, None).await?;
+        
+        // Extract unique directory names from file paths
+        let mut directories = std::collections::HashSet::new();
+        for obj in objects {
+            if let Some(remaining_path) = obj.key.strip_prefix(data_prefix) {
+                // Extract the first directory component (dataset directory)
+                if let Some(dir_name) = remaining_path.split('/').next() {
+                    if !dir_name.is_empty() {
+                        directories.insert(dir_name.to_string());
+                    }
+                }
+            }
+        }
+        
+        // Create mapping from lowercase dataset names to actual directory names
+        let mut mapping = HashMap::new();
+        for dir_name in directories {
+            let lowercase_name = dir_name.to_lowercase();
+            mapping.insert(lowercase_name, dir_name);
+        }
+        
+        info!("Computed directory mapping for {} datasets", mapping.len());
+        debug!("Directory mapping: {:?}", mapping);
+        
+        Ok(mapping)
+    }
+
+    /// Find dataset directory using pre-computed mapping (thread-safe)
+    pub fn find_dataset_dir_from_mapping(
+        &self, 
+        dataset_name: &str, 
+        directory_mapping: &HashMap<String, String>
+    ) -> Option<String> {
+        let dataset_name_lower = dataset_name.to_lowercase();
+        directory_mapping.get(&dataset_name_lower).cloned()
+    }
+
     /// Detect file format from extension
     pub fn detect_file_format(&self, key: &str) -> FileFormat {
         let key_lower = key.to_lowercase();
@@ -516,28 +591,57 @@ impl S3Client {
                 min_series_length: 0,
                 max_series_length: 0,
                 series_id_columns: vec![],
+                individual_series: vec![],
             });
         }
         
-        // Extract series ID columns from metadata
+        // Extract required columns for selective reading (ts-id + static string features)
+        let required_columns = self.extract_required_columns_for_indexing(metadata);
         let series_id_columns = self.extract_series_id_columns(metadata);
         
-        // Analyze ALL files in parallel for better load balancing
-        info!("Analyzing ALL {} parquet files for precise series counts", data_files.len());
+        info!("Analyzing {} parquet files with selective column reading", data_files.len());
+        info!("Will read {} columns instead of all columns for better performance", required_columns.len());
         
         use futures::stream::{self, StreamExt};
         use std::sync::Arc;
         
+        let required_columns = Arc::new(required_columns);
         let series_id_columns = Arc::new(series_id_columns);
-        let max_concurrent = std::cmp::min(data_files.len(), 4); // Limit to 4 concurrent file analyses per dataset
+        
+        // File size-aware concurrency - prevent memory overload from large files
+        let total_size: i64 = data_files.iter().map(|f| f.size).sum();
+        let avg_file_size = if data_files.len() > 0 { total_size / data_files.len() as i64 } else { 0 };
+        
+        let max_concurrent = if avg_file_size > 1_000_000_000 { // 1GB+ files (like CMIP6)
+            info!("🐌 Large files detected (avg {}MB), using concurrency=1 to prevent memory overload", avg_file_size / 1024 / 1024);
+            1 // Process one heavy file at a time
+        } else if avg_file_size > 100_000_000 { // 100MB+ files
+            info!("📊 Medium files detected (avg {}MB), using concurrency=2", avg_file_size / 1024 / 1024);
+            2 // Light concurrency for medium files  
+        } else {
+            info!("🚀 Small files detected (avg {}MB), using concurrency=4", avg_file_size / 1024 / 1024);
+            std::cmp::min(data_files.len(), 4) // Normal concurrency for small files
+        };
         
         let results: Vec<_> = stream::iter(data_files.iter().enumerate())
             .map(|(i, file)| {
+                let required_columns = required_columns.clone();
                 let series_id_columns = series_id_columns.clone();
                 let file_key = file.key.clone();
                 async move {
-                    debug!("Analyzing file {}/{}: {}", i + 1, data_files.len(), file_key);
-                    (i, self.analyze_parquet_file(&file_key, &series_id_columns).await)
+                    debug!("Analyzing file {}/{}: {} (selective columns)", i + 1, data_files.len(), file_key);
+                    
+                    // Start file monitoring
+                    let monitor = get_global_monitor();
+                    let file_metrics = monitor.start_operation(format!("file_{}", 
+                        file_key.split('/').last().unwrap_or(&file_key)));
+                    
+                    let result = self.analyze_parquet_file_selective(&file_key, &required_columns, &series_id_columns).await;
+                    
+                    // Finish file monitoring
+                    monitor.finish_operation(file_metrics);
+                    
+                    (i, result)
                 }
             })
             .buffer_unordered(max_concurrent)
@@ -548,12 +652,32 @@ impl S3Client {
         let mut unique_series = std::collections::HashSet::new();
         let mut total_records = 0i64;
         
+        // Track individual series information across files
+        let mut series_info_map: std::collections::HashMap<String, IndividualSeriesInfo> = std::collections::HashMap::new();
+        
         for (i, result) in results {
             match result {
                 Ok(file_stats) => {
-                    // Add unique series from this file
-                    for series_id in file_stats.unique_series {
-                        unique_series.insert(series_id);
+                    let file_key = &data_files[i].key;
+                    
+                    // Process each series from this file
+                    for (series_idx, series_id) in file_stats.unique_series.iter().enumerate() {
+                        unique_series.insert(series_id.clone());
+                        
+                        // Get the record count for this specific series (if available)
+                        let record_count = file_stats.series_lengths.get(series_idx).copied().unwrap_or(1);
+                        
+                        // Update or create series info
+                        series_info_map.entry(series_id.clone())
+                            .and_modify(|info| {
+                                info.record_count += record_count;
+                                info.source_files.push(file_key.clone());
+                            })
+                            .or_insert(IndividualSeriesInfo {
+                                series_id: series_id.clone(),
+                                record_count,
+                                source_files: vec![file_key.clone()],
+                            });
                     }
                     
                     // Add series lengths
@@ -582,8 +706,12 @@ impl S3Client {
             (avg, min, max)
         };
         
+        // Convert individual series map to vector
+        let individual_series: Vec<IndividualSeriesInfo> = series_info_map.into_values().collect();
+        
         info!("PRECISE Dataset statistics: {} unique series, {} total records, avg length: {:.1}", 
               actual_unique_series, actual_total_records, avg_length);
+        debug!("Individual series count: {}", individual_series.len());
         
         Ok(SeriesStatistics {
             unique_series_count: actual_unique_series,
@@ -592,6 +720,7 @@ impl S3Client {
             min_series_length: min_length,
             max_series_length: max_length,
             series_id_columns: (*series_id_columns).clone(),
+            individual_series,
         })
     }
     
@@ -603,6 +732,18 @@ impl S3Client {
             // Default to item_id if no ts_id information available
             vec!["item_id".to_string()]
         }
+    }
+    
+    /// Extract all required columns for indexing from metadata
+    /// Returns only ts-id columns for now (ignoring TFC features as requested)
+    fn extract_required_columns_for_indexing(&self, metadata: &DatasetMetadata) -> Vec<String> {
+        // For now, only include time-series ID columns (needed for groupby/counting)
+        // This still provides significant performance benefits by avoiding loading
+        // numerical time series data columns that aren't needed for indexing
+        let required_columns = self.extract_series_id_columns(metadata);
+        
+        info!("Required columns for indexing (ts-id only): {:?}", required_columns);
+        required_columns
     }
     
     /// Analyze a single parquet file for series statistics
@@ -666,12 +807,24 @@ impl S3Client {
             df.group_by(&valid_series_cols)?.count()?
         };
         
-        // Get the count column (polars names it "len" in groupby operations)
-        let count_col_name = series_counts_df.get_column_names()
+        // Get the count column (polars can name it "len", "count", or other variations)
+        let available_count_cols = series_counts_df.get_column_names();
+        debug!("Available columns in count DataFrame: {:?}", available_count_cols);
+        
+        let count_col_name = available_count_cols
             .iter()
-            .find(|name| name.contains("len") || name.contains("count"))
+            .find(|name| {
+                let name_lower = name.to_lowercase();
+                name_lower.contains("len") || name_lower.contains("count") || 
+                name_lower == "n" || name_lower == "size" || **name == "len"
+            })
             .copied()
-            .unwrap_or("len");
+            .unwrap_or_else(|| {
+                // Fallback: use the last column (usually the count in groupby results)
+                available_count_cols.last().copied().unwrap_or("len")
+            });
+            
+        debug!("Using count column: '{}'", count_col_name);
             
         // Handle different data types for count column
         let count_column = series_counts_df.column(count_col_name)?;
@@ -690,6 +843,188 @@ impl S3Client {
         };
         
         let total_records = df.height() as i64;
+        
+        Ok(FileAnalysisResult {
+            unique_series,
+            series_lengths,
+            total_records,
+        })
+    }
+    
+    /// Analyze a single parquet file with selective column reading for better performance
+    async fn analyze_parquet_file_selective(
+        &self,
+        key: &str,
+        required_columns: &[String],
+        series_id_columns: &[String],
+    ) -> Result<FileAnalysisResult> {
+        let monitor = get_global_monitor();
+        
+        // Monitor S3 download operation
+        let download_metrics = monitor.start_operation(format!("s3_download_{}", 
+            key.split('/').last().unwrap_or("unknown")));
+        let data = self.download_object(key).await?;
+        monitor.finish_operation(download_metrics);
+        
+        // Monitor schema reading
+        let schema_metrics = monitor.start_operation("parquet_schema_read".to_string());
+        let cursor = Cursor::new(data.clone());
+        let mut reader = polars::io::parquet::ParquetReader::new(cursor);
+        let schema = reader.schema()?;
+        let available_columns: Vec<String> = schema.get_names().into_iter().map(|s| s.to_string()).collect();
+        monitor.finish_operation(schema_metrics);
+        
+        debug!("Available columns in {}: {:?}", key, available_columns);
+        debug!("Requested columns: {:?}", required_columns);
+        
+        // Filter to only available columns from our required set
+        let valid_required_cols: Vec<String> = required_columns
+            .iter()
+            .filter(|col| available_columns.contains(col))
+            .cloned()
+            .collect();
+        
+        if valid_required_cols.is_empty() {
+            warn!("No required columns found in file {}, falling back to all columns", key);
+            // Fall back to original method if no required columns are available
+            return self.analyze_parquet_file(key, series_id_columns).await;
+        }
+        
+        // Monitor selective parquet reading
+        let read_metrics = monitor.start_operation(format!("parquet_selective_read_{}cols", 
+            valid_required_cols.len()));
+        let cursor = Cursor::new(data); // Use the already downloaded data
+        let df = polars::io::parquet::ParquetReader::new(cursor)
+            .with_columns(Some(valid_required_cols.clone()))
+            .finish()
+            .context("Failed to read parquet file with selective columns")?;
+        monitor.finish_operation(read_metrics);
+        
+        let actual_columns: Vec<String> = df.get_column_names().iter().map(|s| s.to_string()).collect();
+        info!("Successfully read {} with {} columns (reduced from {} total)", 
+              key, actual_columns.len(), available_columns.len());
+
+        // Filter series ID columns to only those that are available (needed for debug output too)
+        let valid_series_cols: Vec<String> = series_id_columns
+            .iter()
+            .filter(|col| actual_columns.contains(col))
+            .cloned()
+            .collect();
+            
+        // Debug: Show the loaded table structure and sample data
+        debug!("DataFrame shape: {} rows × {} columns", df.height(), df.width());
+        debug!("Column names: {:?}", df.get_column_names());
+        
+        // Show first 5 rows of the selected data
+        if df.height() > 0 {
+            let sample_rows = std::cmp::min(5, df.height());
+            debug!("First {} rows of selected data:", sample_rows);
+            for i in 0..sample_rows {
+                let mut row_data = Vec::new();
+                for col_name in df.get_column_names() {
+                    let value = df.column(col_name).unwrap().get(i).unwrap();
+                    row_data.push(format!("{}: {}", col_name, value));
+                }
+                debug!("  Row {}: [{}]", i + 1, row_data.join(", "));
+            }
+            
+            // Show unique time-series count based on selected columns
+            if !valid_series_cols.is_empty() {
+                let unique_series_count = if valid_series_cols.len() == 1 {
+                    df.column(&valid_series_cols[0]).unwrap().n_unique().unwrap()
+                } else {
+                    // For multiple columns, group by all series columns to get unique combinations
+                    df.group_by(&valid_series_cols).unwrap().count().unwrap().height()
+                };
+                debug!("📊 Unique time-series in this file: {} (based on columns: {:?})", 
+                      unique_series_count, valid_series_cols);
+            }
+        }
+        
+        if valid_series_cols.is_empty() {
+            return Err(anyhow::anyhow!(
+                "No valid series ID columns found after selective reading. Available: {:?}, Required: {:?}",
+                actual_columns, series_id_columns
+            ));
+        }
+        
+        // Monitor unique series identification
+        let unique_metrics = monitor.start_operation("series_unique_analysis".to_string());
+        let unique_series: Vec<String> = if valid_series_cols.len() == 1 {
+            df.column(&valid_series_cols[0])?
+                .unique()?
+                .iter()
+                .map(|v| v.to_string())
+                .collect()
+        } else {
+            // For multiple columns, create composite keys
+            let grouped = df.group_by(&valid_series_cols)?.count()?;
+            let mut unique_series = Vec::new();
+            
+            for i in 0..grouped.height() {
+                let mut key_parts = Vec::new();
+                for col in &valid_series_cols {
+                    let value = grouped.column(col)?.get(i)?;
+                    key_parts.push(value.to_string());
+                }
+                unique_series.push(key_parts.join("|"));
+            }
+            unique_series
+        };
+        monitor.finish_operation(unique_metrics);
+        
+        // Monitor series length calculation
+        let length_metrics = monitor.start_operation("series_length_calculation".to_string());
+        let series_counts_df = if valid_series_cols.len() == 1 {
+            df.group_by([&valid_series_cols[0]])?.count()?
+        } else {
+            df.group_by(&valid_series_cols)?.count()?
+        };
+        monitor.finish_operation(length_metrics);
+        
+        // Get the count column (polars can name it "len", "count", or other variations)
+        let available_count_cols = series_counts_df.get_column_names();
+        debug!("Available columns in count DataFrame: {:?}", available_count_cols);
+        
+        let count_col_name = available_count_cols
+            .iter()
+            .find(|name| {
+                let name_lower = name.to_lowercase();
+                name_lower.contains("len") || name_lower.contains("count") || 
+                name_lower == "n" || name_lower == "size" || **name == "len"
+            })
+            .copied()
+            .unwrap_or_else(|| {
+                // Fallback: use the last column (usually the count in groupby results)
+                available_count_cols.last().copied().unwrap_or("len")
+            });
+            
+        debug!("Using count column: '{}'", count_col_name);
+        
+        // Monitor data type conversion and final statistics
+        let conversion_metrics = monitor.start_operation("series_stats_conversion".to_string());
+        
+        // Handle different data types for count column
+        let count_column = series_counts_df.column(count_col_name)?;
+        let series_lengths: Vec<i64> = match count_column.dtype() {
+            DataType::UInt32 => count_column.u32()?.into_no_null_iter().map(|v| v as i64).collect(),
+            DataType::UInt64 => count_column.u64()?.into_no_null_iter().map(|v| v as i64).collect(),
+            DataType::Int32 => count_column.i32()?.into_no_null_iter().map(|v| v as i64).collect(),
+            DataType::Int64 => count_column.i64()?.into_no_null_iter().collect(),
+            _ => {
+                // Try to cast to i64
+                count_column.cast(&DataType::Int64)?
+                    .i64()?
+                    .into_no_null_iter()
+                    .collect()
+            }
+        };
+        
+        let total_records = df.height() as i64;
+        
+        monitor.log_milestone("file_analysis", "complete", 
+            &format!("series={}, records={}, cols_read={}", unique_series.len(), total_records, valid_required_cols.len()));
+        monitor.finish_operation(conversion_metrics);
         
         Ok(FileAnalysisResult {
             unique_series,
