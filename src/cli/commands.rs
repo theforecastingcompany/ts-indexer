@@ -173,15 +173,15 @@ impl SearchCommand {
 }
 
 #[derive(Args)]  
-pub struct StatsCommand {
-    /// Show detailed statistics with breakdowns
-    #[arg(short, long, help = "Show detailed statistics including data breakdowns")]
+pub struct StatusCommand {
+    /// Show detailed statistics and progress with dataset breakdowns
+    #[arg(short, long, help = "Show detailed statistics including progress breakdowns and dataset details")]
     pub detailed: bool,
 }
 
-impl StatsCommand {
+impl StatusCommand {
     pub async fn execute(self) -> Result<()> {
-        info!("Showing index statistics...");
+        info!("Showing database status and indexing progress...");
         
         if self.detailed {
             info!("Detailed mode enabled");
@@ -210,72 +210,37 @@ impl StatsCommand {
             Err(e) => return Err(e),
         };
         
-        // Get statistics
+        // Get both statistics and progress
         let stats = db.get_stats()?;
+        let progress = db.get_indexing_progress()?;
         
-        println!("\nDatabase Statistics:");
-        println!("{:-<50}", "");
-        println!("Datasets: {}", stats.dataset_count);
-        println!("Series: {}", stats.series_count);
-        println!("Records: {}", stats.record_count);
+        // Display unified status information
+        println!("\n📊 Database Status & Statistics:");
+        println!("{:-<60}", "");
+        
+        // Dataset progress overview
+        println!("📈 Dataset Progress:");
+        println!("  ✅ Completed: {} datasets", progress.completed);
+        println!("  🔄 In Progress: {} datasets", progress.in_progress);
+        println!("  ❌ Failed: {} datasets", progress.failed);
+        println!("  ⏳ Pending: {} datasets", progress.pending);
+        println!("  📊 Total: {} datasets", progress.total());
+        println!("  🎯 Completion: {:.1}%", progress.completion_percentage());
+        
+        println!();
+        
+        // Data statistics (from completed datasets only)
+        println!("📋 Data Statistics (Completed Only):");
+        println!("  🔢 Series Indexed: {}", stats.series_count);
+        println!("  📈 Records Indexed: {}", stats.record_count);
         
         if let (Some(earliest), Some(latest)) = (stats.earliest_timestamp, stats.latest_timestamp) {
-            println!("Date range: {} to {}", 
+            println!("  📅 Date Range: {} to {}", 
                 earliest.format("%Y-%m-%d"), 
                 latest.format("%Y-%m-%d"));
         }
         
-        Ok(())
-    }
-}
-
-#[derive(Args)]
-pub struct ProgressCommand {
-    /// Show detailed progress with dataset breakdown
-    #[arg(short, long)]
-    pub detailed: bool,
-}
-
-impl ProgressCommand {
-    pub async fn execute(self) -> Result<()> {
-        info!("Showing indexing progress...");
-        
-        // Try to initialize database, handle lock conflicts gracefully
-        let db = match Database::new("ts_indexer.db") {
-            Ok(db) => db,
-            Err(e) if e.to_string().contains("Conflicting lock") => {
-                println!("⏳ Indexer is currently running, trying read-only access...");
-                // Try opening in read-only mode by connecting to a copy
-                match std::fs::copy("ts_indexer.db", "ts_indexer_readonly.db") {
-                    Ok(_) => {
-                        let readonly_db = Database::new("ts_indexer_readonly.db")?;
-                        // Clean up the temporary file after we're done
-                        let _ = std::fs::remove_file("ts_indexer_readonly.db");
-                        readonly_db
-                    },
-                    Err(_) => {
-                        println!("❌ Cannot access database while indexer is running.");
-                        println!("💡 Try: kill the indexer gracefully (Ctrl+C) or wait for it to complete.");
-                        return Ok(());
-                    }
-                }
-            },
-            Err(e) => return Err(e),
-        };
-        
-        // Get progress statistics
-        let progress = db.get_indexing_progress()?;
-        
-        println!("\n📊 Indexing Progress:");
-        println!("{:-<50}", "");
-        println!("✅ Completed: {} datasets", progress.completed);
-        println!("🔄 In Progress: {} datasets", progress.in_progress);
-        println!("❌ Failed: {} datasets", progress.failed);
-        println!("⏳ Pending: {} datasets", progress.pending);
-        println!("{:-<50}", "");
-        println!("📈 Total: {} datasets", progress.total());
-        println!("🎯 Completion: {:.1}%", progress.completion_percentage());
-        
+        // Show detailed breakdown if requested
         if self.detailed {
             println!("\n📋 Detailed Breakdown:");
             
@@ -305,6 +270,32 @@ impl ProgressCommand {
                     }
                 }
             }
+            
+            // Show recently completed datasets
+            if progress.completed > 0 {
+                println!("\n✅ Recently Completed Datasets:");
+                let completed_datasets = db.get_datasets_by_status(crate::db::IndexingStatus::Completed)?;
+                // Sort by completion time (most recent first) and show top 5
+                let mut recent_completed: Vec<_> = completed_datasets.iter().collect();
+                recent_completed.sort_by(|a, b| {
+                    b.indexing_completed_at.cmp(&a.indexing_completed_at)
+                });
+                
+                for dataset in recent_completed.iter().take(5) {
+                    if let Some(completed) = dataset.indexing_completed_at {
+                        let duration = completed.signed_duration_since(
+                            dataset.indexing_started_at.unwrap_or(completed)
+                        );
+                        println!("  • {} (took {})", dataset.name, humanize_duration(duration));
+                    } else {
+                        println!("  • {}", dataset.name);
+                    }
+                }
+                
+                if completed_datasets.len() > 5 {
+                    println!("  ... and {} more completed", completed_datasets.len() - 5);
+                }
+            }
         }
         
         Ok(())
@@ -313,7 +304,7 @@ impl ProgressCommand {
 
 /// Convert duration to human-readable format
 fn humanize_duration(duration: chrono::Duration) -> String {
-    let total_seconds = duration.num_seconds();
+    let total_seconds = duration.num_seconds().abs(); // Handle negative durations
     
     if total_seconds < 60 {
         format!("{}s", total_seconds)

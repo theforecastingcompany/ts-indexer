@@ -9,7 +9,7 @@ mod indexer;
 mod s3;
 mod search;
 
-use cli::commands::{IndexCommand, SearchCommand, StatsCommand, ProgressCommand};
+use cli::commands::{IndexCommand, SearchCommand, StatusCommand};
 
 #[derive(Parser)]
 #[command(name = "ts-indexer")]
@@ -30,10 +30,8 @@ enum Commands {
     Index(IndexCommand),
     /// Search indexed time-series
     Search(SearchCommand),
-    /// Show indexing statistics
-    Stats(StatsCommand),
-    /// Show indexing progress and resume status
-    Progress(ProgressCommand),
+    /// Show database status, statistics, and indexing progress
+    Status(StatusCommand),
 }
 
 #[tokio::main]
@@ -58,7 +56,6 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Index(cmd) => cmd.execute().await,
         Commands::Search(cmd) => cmd.execute().await,
-        Commands::Stats(cmd) => cmd.execute().await,
-        Commands::Progress(cmd) => cmd.execute().await,
+        Commands::Status(cmd) => cmd.execute().await,
     }
 }
