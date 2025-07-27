@@ -38,6 +38,14 @@ pub struct IndexCommand {
     /// Number of concurrent workers for resumable parallel processing
     #[arg(short, long, default_value = "8", help = "Number of parallel workers (1-16, default: 8)")]
     pub concurrency: usize,
+    
+    /// Filter to specific datasets (comma-separated list or single dataset name)
+    #[arg(long, help = "Filter to specific datasets by name (e.g., 'beijing_subway_30min' or 'beijing_subway_30min,alibaba_cluster_trace_2018')")]
+    pub filter: Option<String>,
+    
+    /// Enable detailed resource monitoring and performance logging
+    #[arg(long, help = "Enable detailed resource monitoring (memory, threads, timing)")]
+    pub monitor: bool,
 }
 
 impl IndexCommand {
@@ -54,6 +62,15 @@ impl IndexCommand {
         
         if let Some(max) = self.max_files {
             info!("🔢 Max files to process: {} (testing mode)", max);
+        }
+        
+        if let Some(ref filter) = self.filter {
+            info!("🔍 Dataset filter: {}", filter);
+        }
+        
+        if self.monitor {
+            info!("📊 Resource monitoring enabled");
+            crate::monitoring::init_monitoring("index_command");
         }
         
         if self.force {
@@ -75,7 +92,9 @@ impl IndexCommand {
             &self.metadata_prefix, 
             self.max_files, 
             self.concurrency,
-            self.force // Use force flag for reindexing
+            self.force, // Use force flag for reindexing
+            self.filter.as_deref(), // Pass the filter option
+            self.monitor // Pass the monitoring flag
         ).await?;
         
         println!("\n🎉 Resumable indexing completed!");
@@ -109,6 +128,10 @@ pub struct SearchCommand {
     /// Show time-series data preview
     #[arg(long, help = "Show additional dataset preview information")]
     pub preview: bool,
+    
+    /// Interactive hierarchical search mode
+    #[arg(short, long, help = "Enable interactive hierarchical search with navigation")]
+    pub interactive: bool,
 }
 
 #[derive(clap::ValueEnum, Clone, Debug)]
@@ -133,8 +156,211 @@ impl SearchCommand {
         // Create search engine
         let search_engine = SearchEngine::new(db);
         
+        if self.interactive {
+            // Interactive hierarchical search mode
+            self.run_interactive_search(search_engine).await
+        } else {
+            // Traditional search mode
+            self.run_traditional_search(search_engine).await
+        }
+    }
+    
+    async fn run_interactive_search(&self, search_engine: SearchEngine) -> Result<()> {
+        use crossterm::{
+            event::{self, Event, KeyCode, KeyEvent},
+            execute,
+            terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+        };
+        use std::io::{self, Write};
+        
+        // Get search results (increased limit for comprehensive search)
+        let search_query = create_search_query(self.query.clone(), Some(1000));
+        let results = search_engine.search(search_query).await?;
+        
+        // Group results by dataset for hierarchical display
+        let hierarchical_results = self.group_results_hierarchically(&results.results);
+        
+        // Force simple mode to avoid terminal compatibility issues with Ghostty/zsh
+        // let raw_mode_enabled = enable_raw_mode().is_ok();
+        // let alternate_screen_enabled = execute!(io::stdout(), EnterAlternateScreen).is_ok();
+        
+        // Always use simple mode for better compatibility
+        return self.run_simple_interactive_search(hierarchical_results).await;
+        
+        let mut current_view = HierarchicalView::DatasetLevel;
+        let mut dataset_index = 0;
+        let mut series_index = 0;
+        let mut selected_dataset = None;
+        
+        loop {
+            // Simple clear with newlines instead of terminal control sequences
+            print!("\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n"); // Clear with newlines
+            
+            self.display_hierarchical_view(&hierarchical_results, &current_view, dataset_index, series_index, &selected_dataset)?;
+            
+            // Handle keyboard input
+            if let Event::Key(key_event) = event::read()? {
+                match key_event.code {
+                    KeyCode::Char('q') => break,
+                    KeyCode::Esc => {
+                        if current_view == HierarchicalView::SeriesLevel {
+                            current_view = HierarchicalView::DatasetLevel;
+                            selected_dataset = None;
+                            series_index = 0;
+                        } else {
+                            break;
+                        }
+                    }
+                    KeyCode::Up => {
+                        match current_view {
+                            HierarchicalView::DatasetLevel => {
+                                if dataset_index > 0 {
+                                    dataset_index -= 1;
+                                }
+                            }
+                            HierarchicalView::SeriesLevel => {
+                                if let Some(dataset_name) = &selected_dataset {
+                                    if let Some(dataset_data) = hierarchical_results.get(dataset_name) {
+                                        if series_index > 0 {
+                                            series_index -= 1;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    KeyCode::Down => {
+                        match current_view {
+                            HierarchicalView::DatasetLevel => {
+                                if dataset_index < hierarchical_results.len().saturating_sub(1) {
+                                    dataset_index += 1;
+                                }
+                            }
+                            HierarchicalView::SeriesLevel => {
+                                if let Some(dataset_name) = &selected_dataset {
+                                    if let Some(dataset_data) = hierarchical_results.get(dataset_name) {
+                                        if series_index < dataset_data.series.len().saturating_sub(1) {
+                                            series_index += 1;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    KeyCode::Enter => {
+                        if current_view == HierarchicalView::DatasetLevel {
+                            // Expand to series level
+                            let dataset_names: Vec<_> = hierarchical_results.keys().collect();
+                            if let Some(&dataset_name) = dataset_names.get(dataset_index) {
+                                selected_dataset = Some(dataset_name.clone());
+                                current_view = HierarchicalView::SeriesLevel;
+                                series_index = 0;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        
+        // Terminal cleanup disabled since we're using simple mode
+        // if raw_mode_enabled {
+        //     let _ = disable_raw_mode();
+        // }
+        // if alternate_screen_enabled {
+        //     let _ = execute!(io::stdout(), LeaveAlternateScreen);
+        // }
+        
+        Ok(())
+    }
+    
+    async fn run_simple_interactive_search(&self, hierarchical_results: std::collections::HashMap<String, DatasetGroup>) -> Result<()> {
+        use std::io::{self, Write};
+        
+        println!("🔍 Interactive Search: '{}' (Simple Mode)\n", self.query);
+        
+        // Display dataset-level results
+        println!("📁 DATASETS ({} found)", hierarchical_results.len());
+        println!("Enter dataset number to view series, or 'q' to quit\n");
+        
+        let dataset_names: Vec<_> = hierarchical_results.keys().cloned().collect();
+        
+        for (idx, dataset_name) in dataset_names.iter().enumerate() {
+            let group = &hierarchical_results[dataset_name];
+            let series_count = group.series.len();
+            let total_records = group.total_records;
+            
+            println!("{}. 📂 {} ({} series, {} records)", 
+                     idx + 1, dataset_name, series_count, total_records);
+        }
+        
+        loop {
+            print!("\n> ");
+            io::stdout().flush()?;
+            
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
+            let input = input.trim();
+            
+            if input == "q" || input == "quit" {
+                break;
+            }
+            
+            if let Ok(choice) = input.parse::<usize>() {
+                if choice > 0 && choice <= dataset_names.len() {
+                    let dataset_name = &dataset_names[choice - 1];
+                    let group = &hierarchical_results[dataset_name];
+                    
+                    println!("\n📂 {} > 📊 SERIES ({} series)", dataset_name, group.series.len());
+                    println!("Enter 'b' to go back, or 'q' to quit\n");
+                    
+                    for (idx, series) in group.series.iter().enumerate() {
+                        println!("{}. 📊 {} ({} records, relevance: {:.2})", 
+                                 idx + 1, series.search_result.series_id,
+                                 series.search_result.record_count,
+                                 series.relevance_score);
+                    }
+                    
+                    // Wait for user input to continue
+                    loop {
+                        print!("\n> ");
+                        io::stdout().flush()?;
+                        
+                        let mut series_input = String::new();
+                        io::stdin().read_line(&mut series_input)?;
+                        let series_input = series_input.trim();
+                        
+                        if series_input == "q" || series_input == "quit" {
+                            return Ok(());
+                        } else if series_input == "b" || series_input == "back" {
+                            break;
+                        }
+                    }
+                    
+                    // Show datasets again
+                    println!("\n📁 DATASETS ({} found)", hierarchical_results.len());
+                    for (idx, dataset_name) in dataset_names.iter().enumerate() {
+                        let group = &hierarchical_results[dataset_name];
+                        let series_count = group.series.len();
+                        let total_records = group.total_records;
+                        
+                        println!("{}. 📂 {} ({} series, {} records)", 
+                                 idx + 1, dataset_name, series_count, total_records);
+                    }
+                } else {
+                    println!("Invalid choice. Please enter a number between 1 and {}", dataset_names.len());
+                }
+            } else {
+                println!("Invalid input. Enter a dataset number or 'q' to quit.");
+            }
+        }
+        
+        Ok(())
+    }
+    
+    async fn run_traditional_search(&self, search_engine: SearchEngine) -> Result<()> {
         // Perform search
-        let search_query = create_search_query(self.query, Some(self.limit));
+        let search_query = create_search_query(self.query.clone(), Some(self.limit));
         let results = search_engine.search(search_query).await?;
         
         // Display results
@@ -521,6 +747,392 @@ impl CleanCommand {
             println!("\n💡 Database preserved - existing indexed data is still available");
         }
         
+        Ok(())
+    }
+}
+
+#[derive(Args)]
+pub struct AnalyzeSizesCommand {
+    /// S3 bucket name
+    #[arg(short, long)]
+    pub bucket: String,
+    
+    /// S3 prefix for data files
+    #[arg(short, long, default_value = "lotsa_long_format/")]
+    pub prefix: String,
+    
+    /// AWS region
+    #[arg(short, long, default_value = "eu-west-3")]
+    pub region: String,
+    
+    /// Maximum files to analyze (for quick testing)
+    #[arg(long)]
+    pub max_files: Option<usize>,
+    
+    /// Show detailed file list (top largest files)
+    #[arg(long, help = "Show detailed list of largest files")]
+    pub detailed: bool,
+}
+
+impl AnalyzeSizesCommand {
+    pub async fn execute(self) -> Result<()> {
+        info!("🔍 Analyzing file sizes in S3 bucket: {}", self.bucket);
+        info!("📁 Prefix: {}", self.prefix);
+        info!("🌍 Region: {}", self.region);
+        
+        if let Some(max) = self.max_files {
+            info!("🔢 Max files to analyze: {} (testing mode)", max);
+        }
+        
+        // Initialize S3 client
+        let s3_client = crate::s3::S3Client::new(self.bucket.clone(), self.region.clone()).await?;
+        
+        // List all objects in the prefix
+        info!("📋 Scanning S3 objects...");
+        let objects = s3_client.list_objects(&self.prefix, self.max_files).await?;
+        
+        if objects.is_empty() {
+            println!("❌ No objects found in bucket {} with prefix {}", self.bucket, self.prefix);
+            return Ok(());
+        }
+        
+        // Filter to data files only
+        let data_files = s3_client.filter_data_files(&objects);
+        
+        if data_files.is_empty() {
+            println!("❌ No data files found (looking for .parquet, .csv, .csv.gz files)");
+            return Ok(());
+        }
+        
+        info!("Found {} data files out of {} total objects", data_files.len(), objects.len());
+        
+        // Collect file sizes
+        let mut sizes: Vec<i64> = data_files.iter().map(|f| f.size).collect();
+        sizes.sort();
+        
+        // Calculate statistics
+        let total_files = sizes.len();
+        let total_size_bytes: i64 = sizes.iter().sum();
+        let min_size = *sizes.first().unwrap_or(&0);
+        let max_size = *sizes.last().unwrap_or(&0);
+        let median_size = if total_files > 0 {
+            sizes[total_files / 2]
+        } else {
+            0
+        };
+        let avg_size = if total_files > 0 {
+            total_size_bytes / total_files as i64
+        } else {
+            0
+        };
+        
+        // Percentiles
+        let p95_size = if total_files > 0 {
+            sizes[(total_files as f64 * 0.95) as usize]
+        } else {
+            0
+        };
+        let p99_size = if total_files > 0 {
+            sizes[(total_files as f64 * 0.99) as usize]
+        } else {
+            0
+        };
+        
+        // Display results
+        println!("\n📊 File Size Analysis Results");
+        println!("{:-<60}", "");
+        println!("📂 Total Files: {}", total_files);
+        println!("💾 Total Size: {}", format_bytes(total_size_bytes));
+        println!("📈 Average Size: {}", format_bytes(avg_size));
+        println!("📊 Median Size: {}", format_bytes(median_size));
+        println!("🔽 Min Size: {}", format_bytes(min_size));
+        println!("🔼 Max Size: {}", format_bytes(max_size));
+        println!("📈 95th Percentile: {}", format_bytes(p95_size));
+        println!("🚀 99th Percentile: {}", format_bytes(p99_size));
+        
+        // Size distribution histogram
+        println!("\n📊 Size Distribution:");
+        self.print_size_histogram(&sizes);
+        
+        // Show largest files if detailed mode
+        if self.detailed {
+            println!("\n🔝 Top 20 Largest Files:");
+            println!("{:-<80}", "");
+            let mut files_with_sizes: Vec<_> = data_files.iter().collect();
+            files_with_sizes.sort_by(|a, b| b.size.cmp(&a.size));
+            
+            for (i, file) in files_with_sizes.iter().take(20).enumerate() {
+                println!("{}. {} - {}", 
+                        i + 1, 
+                        format_bytes(file.size), 
+                        file.key.split('/').last().unwrap_or(&file.key));
+            }
+        }
+        
+        // Performance analysis
+        println!("\n⚡ Performance Impact Analysis:");
+        self.analyze_performance_impact(&sizes);
+        
+        Ok(())
+    }
+    
+    fn print_size_histogram(&self, sizes: &[i64]) {
+        let ranges = [
+            (0, 1024 * 1024),           // < 1MB
+            (1024 * 1024, 10 * 1024 * 1024),     // 1MB - 10MB
+            (10 * 1024 * 1024, 100 * 1024 * 1024),   // 10MB - 100MB
+            (100 * 1024 * 1024, 1024 * 1024 * 1024), // 100MB - 1GB
+            (1024 * 1024 * 1024, 10 * 1024 * 1024 * 1024), // 1GB - 10GB
+            (10 * 1024 * 1024 * 1024, 100 * 1024 * 1024 * 1024), // 10GB - 100GB
+        ];
+        
+        let range_names = [
+            "< 1MB",
+            "1MB - 10MB", 
+            "10MB - 100MB",
+            "100MB - 1GB",
+            "1GB - 10GB",
+            "10GB - 100GB",
+        ];
+        
+        for (i, (min_size, max_size)) in ranges.iter().enumerate() {
+            let count = sizes.iter().filter(|&&size| size >= *min_size && size < *max_size).count();
+            let percentage = (count as f64 / sizes.len() as f64) * 100.0;
+            let bar_length = (percentage / 2.0) as usize; // Scale for display
+            let bar = "█".repeat(bar_length);
+            
+            println!("  {:12} │{:40}│ {:5} files ({:5.1}%)", 
+                    range_names[i], 
+                    format!("{:<40}", bar),
+                    count,
+                    percentage);
+        }
+        
+        // Handle files larger than 100GB
+        let huge_files = sizes.iter().filter(|&&size| size >= 100 * 1024 * 1024 * 1024).count();
+        if huge_files > 0 {
+            let percentage = (huge_files as f64 / sizes.len() as f64) * 100.0;
+            let bar_length = (percentage / 2.0) as usize;
+            let bar = "█".repeat(bar_length);
+            println!("  {:12} │{:40}│ {:5} files ({:5.1}%)", 
+                    "> 100GB", 
+                    format!("{:<40}", bar),
+                    huge_files,
+                    percentage);
+        }
+    }
+    
+    fn analyze_performance_impact(&self, sizes: &[i64]) {
+        let gb = 1024 * 1024 * 1024;
+        let large_files = sizes.iter().filter(|&&size| size > gb).count(); // > 1GB
+        let huge_files = sizes.iter().filter(|&&size| size > 10 * gb).count(); // > 10GB
+        let massive_files = sizes.iter().filter(|&&size| size > 100 * gb).count(); // > 100GB
+        
+        println!("{:-<60}", "");
+        println!("🚨 Files requiring special handling:");
+        println!("  > 1GB:   {} files ({:.1}%)", large_files, (large_files as f64 / sizes.len() as f64) * 100.0);
+        println!("  > 10GB:  {} files ({:.1}%)", huge_files, (huge_files as f64 / sizes.len() as f64) * 100.0);
+        println!("  > 100GB: {} files ({:.1}%)", massive_files, (massive_files as f64 / sizes.len() as f64) * 100.0);
+        
+        if massive_files > 0 {
+            println!("\n⚠️  CRITICAL: {} files exceed 100GB - will cause memory issues with current implementation", massive_files);
+            println!("   Recommendation: Implement selective column reading immediately");
+        } else if huge_files > 0 {
+            println!("\n⚠️  WARNING: {} files exceed 10GB - may cause memory pressure", huge_files);
+            println!("   Recommendation: Consider selective column reading optimization");
+        } else if large_files > 0 {
+            println!("\n💡 INFO: {} files exceed 1GB - monitor memory usage during processing", large_files);
+        } else {
+            println!("\n✅ All files are < 1GB - current implementation should handle well");
+        }
+        
+        // Memory estimation
+        let total_memory_if_concurrent = sizes.iter()
+            .take(8) // Default concurrency
+            .sum::<i64>();
+        println!("\n💾 Memory usage estimate (8 concurrent workers):");
+        println!("   Peak memory: ~{} (loading 8 largest files)", format_bytes(total_memory_if_concurrent));
+        
+        if total_memory_if_concurrent > 64 * gb {
+            println!("   🚨 CRITICAL: Estimated peak memory exceeds 64GB!");
+        } else if total_memory_if_concurrent > 16 * gb {
+            println!("   ⚠️  WARNING: Estimated peak memory exceeds 16GB");
+        } else {
+            println!("   ✅ Estimated memory usage is reasonable");
+        }
+    }
+}
+
+/// Format bytes in human-readable format
+fn format_bytes(bytes: i64) -> String {
+    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
+    const THRESHOLD: f64 = 1024.0;
+    
+    if bytes == 0 {
+        return "0 B".to_string();
+    }
+    
+    let mut size = bytes as f64;
+    let mut unit_index = 0;
+    
+    while size >= THRESHOLD && unit_index < UNITS.len() - 1 {
+        size /= THRESHOLD;
+        unit_index += 1;
+    }
+    
+    if unit_index == 0 {
+        format!("{} {}", bytes, UNITS[unit_index])
+    } else {
+        format!("{:.1} {}", size, UNITS[unit_index])
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum HierarchicalView {
+    DatasetLevel,
+    SeriesLevel,
+}
+
+#[derive(Debug)]
+struct DatasetGroup {
+    dataset_name: String,
+    dataset_info: Option<crate::search::EnhancedSearchResult>,
+    series: Vec<crate::search::EnhancedSearchResult>,
+    total_records: i64,
+}
+
+impl SearchCommand {
+    fn group_results_hierarchically(&self, results: &[crate::search::EnhancedSearchResult]) -> std::collections::HashMap<String, DatasetGroup> {
+        use std::collections::HashMap;
+        
+        let mut groups: HashMap<String, DatasetGroup> = HashMap::new();
+        
+        for result in results {
+            let dataset_id = &result.search_result.dataset_id;
+            
+            // Check if this is a dataset-level result (series_id == dataset_id)
+            let is_dataset_level = result.search_result.series_id == *dataset_id;
+            
+            groups.entry(dataset_id.clone())
+                .and_modify(|group| {
+                    if is_dataset_level {
+                        group.dataset_info = Some(result.clone());
+                    } else {
+                        group.series.push(result.clone());
+                    }
+                })
+                .or_insert_with(|| {
+                    let mut group = DatasetGroup {
+                        dataset_name: dataset_id.clone(),
+                        dataset_info: None,
+                        series: Vec::new(),
+                        total_records: 0,
+                    };
+                    
+                    if is_dataset_level {
+                        group.dataset_info = Some(result.clone());
+                        group.total_records = result.search_result.record_count;
+                    } else {
+                        group.series.push(result.clone());
+                    }
+                    
+                    group
+                });
+        }
+        
+        // Calculate total records for datasets without dataset-level info
+        for group in groups.values_mut() {
+            if group.dataset_info.is_none() {
+                group.total_records = group.series.iter().map(|s| s.search_result.record_count).sum();
+            }
+        }
+        
+        groups
+    }
+    
+    fn display_hierarchical_view(
+        &self,
+        hierarchical_results: &std::collections::HashMap<String, DatasetGroup>,
+        current_view: &HierarchicalView,
+        dataset_index: usize,
+        series_index: usize,
+        selected_dataset: &Option<String>,
+    ) -> Result<()> {
+        use std::io::{self, Write};
+        
+        // Header
+        println!("🔍 Interactive Search: '{}'\n", self.query);
+        
+        match current_view {
+            HierarchicalView::DatasetLevel => {
+                println!("📁 DATASETS ({} found)", hierarchical_results.len());
+                println!("Use ↑↓ to navigate, Enter to expand, 'q' to quit\n");
+                
+                let dataset_names: Vec<_> = hierarchical_results.keys().cloned().collect();
+                
+                for (idx, dataset_name) in dataset_names.iter().enumerate() {
+                    let group = &hierarchical_results[dataset_name];
+                    let prefix = if idx == dataset_index { "► " } else { "" };
+                    
+                    let series_count = group.series.len();
+                    let total_records = group.total_records;
+                    
+                    println!("{}📂 {} ({} series, {} records)", 
+                             prefix, dataset_name, series_count, total_records);
+                    
+                    if idx == dataset_index {
+                        if let Some(dataset_info) = &group.dataset_info {
+                            if let Some(theme) = &dataset_info.search_result.theme {
+                                println!("     Theme: {}", theme);
+                            }
+                            if let Some(desc) = &dataset_info.search_result.description {
+                                println!("     Description: {}", desc);
+                            }
+                        }
+                    }
+                }
+            }
+            HierarchicalView::SeriesLevel => {
+                if let Some(dataset_name) = selected_dataset {
+                    if let Some(group) = hierarchical_results.get(dataset_name) {
+                        println!("📂 {} > 📊 SERIES ({} series)", dataset_name, group.series.len());
+                        println!("Use ↑↓ to navigate, Esc to go back, 'q' to quit\n");
+                        
+                        for (idx, series) in group.series.iter().enumerate() {
+                            let prefix = if idx == series_index { "► " } else { "" };
+                            
+                            println!("{}📊 {} ({} records)", 
+                                     prefix, series.search_result.series_id, series.search_result.record_count);
+                            
+                            if idx == series_index {
+                                println!("     Relevance: {:.2}", series.relevance_score);
+                                if !series.match_reasons.is_empty() {
+                                    println!("     Matched: {}", series.match_reasons.join(", "));
+                                }
+                                if let Some(theme) = &series.search_result.theme {
+                                    println!("     Theme: {}", theme);
+                                }
+                                println!("     First: {}", series.search_result.first_timestamp.format("%Y-%m-%d"));
+                                println!("     Last: {}", series.search_result.last_timestamp.format("%Y-%m-%d"));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Footer
+        println!("\n{}", "─".repeat(80));
+        match current_view {
+            HierarchicalView::DatasetLevel => {
+                println!("💡 Press Enter to view series within a dataset");
+            }
+            HierarchicalView::SeriesLevel => {
+                println!("💡 Press Esc to return to dataset view");
+            }
+        }
+        
+        io::stdout().flush()?;
         Ok(())
     }
 }
