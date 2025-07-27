@@ -10,6 +10,7 @@ use tokio::select;
 use tracing::{info, warn, debug, error};
 
 use crate::db::{Database, Dataset, IndexingStatus};
+use crate::progress::IndexerProgress;
 use crate::s3::S3Client;
 
 pub struct Indexer {
@@ -216,6 +217,11 @@ impl Indexer {
             });
         }
         
+        // Initialize live progress tracking (lock-free atomic counters)
+        let progress_tracker = IndexerProgress::new(total_datasets);
+        info!("📊 Live progress tracking initialized for {} datasets (PID: {})", 
+             total_datasets, std::process::id());
+        
         // Create progress tracking
         let multi_progress = MultiProgress::new();
         let main_progress = multi_progress.add(ProgressBar::new(total_datasets as u64));
@@ -253,6 +259,7 @@ impl Indexer {
                 let semaphore = semaphore.clone();
                 let progress = main_progress.clone();
                 let shutdown_signal = shutdown_signal.clone();
+                let progress_tracker = progress_tracker.clone();
                 
                 async move {
                     let _permit = semaphore.acquire().await.unwrap();
@@ -297,7 +304,10 @@ impl Indexer {
                                 if let Err(e) = indexer.db.mark_dataset_completed(&dataset.dataset_id) {
                                     warn!("Failed to mark dataset {} as completed: {}", dataset.dataset_id, e);
                                 }
-                                progress.set_message(format!("✅ Completed: {}", dataset.name));
+                                // Update live progress tracker (atomic increment)
+                                let completed_count = progress_tracker.increment_completed();
+                                progress.set_message(format!("✅ Completed: {} ({}/{})", 
+                                                    dataset.name, completed_count, progress_tracker.total_count()));
                                 DatasetResult {
                                     dataset: Some(dataset),
                                     index: task.index,
@@ -315,7 +325,9 @@ impl Indexer {
                                 if let Err(db_err) = indexer.db.mark_dataset_failed(&dataset_name, &error_msg) {
                                     warn!("Failed to mark dataset {} as failed: {}", dataset_name, db_err);
                                 }
-                                progress.set_message(format!("❌ Failed: {}", dataset_name));
+                                // Update live progress tracker (atomic increment for failures)
+                                let failed_count = progress_tracker.increment_failed();
+                                progress.set_message(format!("❌ Failed: {} ({} failed)", dataset_name, failed_count));
                             }
                             DatasetResult {
                                 dataset: None,
@@ -379,6 +391,13 @@ impl Indexer {
             ));
             info!("Parallel indexing completed successfully!");
         }
+        
+        // Cleanup progress tracking on completion/shutdown
+        if !was_interrupted {
+            // Force write final state before cleanup
+            let _ = progress_tracker.write_state_to_file();
+        }
+        progress_tracker.cleanup_on_shutdown();
         
         let stats = IndexingStats {
             files_processed: datasets_processed,

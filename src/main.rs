@@ -6,10 +6,11 @@ use tracing_subscriber::{self, EnvFilter};
 mod cli;
 mod db;
 mod indexer;
+mod progress;
 mod s3;
 mod search;
 
-use cli::commands::{IndexCommand, SearchCommand, StatusCommand};
+use cli::commands::{CleanCommand, IndexCommand, SearchCommand, StatusCommand};
 
 #[derive(Parser)]
 #[command(name = "ts-indexer")]
@@ -32,6 +33,8 @@ enum Commands {
     Search(SearchCommand),
     /// Show database status, statistics, and indexing progress
     Status(StatusCommand),
+    /// Clean and reinitialize all states (database + progress files)
+    Clean(CleanCommand),
 }
 
 #[tokio::main]
@@ -41,12 +44,16 @@ async fn main() -> Result<()> {
     // Initialize logging with filtered levels
     let base_level = if cli.verbose { Level::DEBUG } else { Level::INFO };
     
+    // Create comprehensive AWS SDK logging filter
+    let aws_filter = "aws_smithy_runtime=error,aws_sdk_s3=error,aws_config=error,hyper_util=error,aws_smithy_types=error,aws_smithy_http=error,aws_smithy_client=error,aws_endpoint=error,aws_credential_types=error,aws_sigv4=error,h2=error,hyper=error,reqwest=error,rustls=error,tower=error,aws_smithy_async=error,aws_smithy_json=error,aws_smithy_query=error,aws_smithy_xml=error,aws_types=error,aws_runtime_api=error";
+    
     tracing_subscriber::fmt()
         .with_max_level(base_level)
         .with_env_filter(
             EnvFilter::new(format!(
-                "ts_indexer={},aws_smithy_runtime=warn,aws_sdk_s3=warn,aws_config=warn,hyper_util=warn",
-                if cli.verbose { "debug" } else { "info" }
+                "ts_indexer={},{}",
+                if cli.verbose { "debug" } else { "info" },
+                aws_filter
             ))
         )
         .init();
@@ -57,5 +64,6 @@ async fn main() -> Result<()> {
         Commands::Index(cmd) => cmd.execute().await,
         Commands::Search(cmd) => cmd.execute().await,
         Commands::Status(cmd) => cmd.execute().await,
+        Commands::Clean(cmd) => cmd.execute().await,
     }
 }

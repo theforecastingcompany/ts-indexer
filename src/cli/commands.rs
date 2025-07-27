@@ -1,9 +1,11 @@
 use anyhow::Result;
 use clap::Args;
+use std::io::{self, Write};
 use tracing::info;
 
 use crate::db::Database;
 use crate::indexer::Indexer;
+use crate::progress::ProgressState;
 use crate::s3::S3Client;
 use crate::search::{SearchEngine, create_search_query};
 
@@ -183,6 +185,23 @@ impl StatusCommand {
     pub async fn execute(self) -> Result<()> {
         info!("Showing database status and indexing progress...");
         
+        // Check for live indexer progress first
+        match ProgressState::read_from_file()? {
+            Some(live_state) if live_state.is_indexer_alive() && !live_state.is_stale(5) => {
+                // We have a live indexer! Show real-time status
+                return self.display_live_status(&live_state).await;
+            }
+            Some(stale_state) => {
+                println!("⚠️  Found stale indexer state (PID: {}, last update: {})", 
+                        stale_state.indexer_pid,
+                        stale_state.last_updated.format("%H:%M:%S"));
+                println!("📊 Falling back to database-only status...\n");
+            }
+            None => {
+                // No live progress file, continue with database-only status
+            }
+        }
+        
         if self.detailed {
             info!("Detailed mode enabled");
         }
@@ -296,6 +315,210 @@ impl StatusCommand {
                     println!("  ... and {} more completed", completed_datasets.len() - 5);
                 }
             }
+        }
+        
+        Ok(())
+    }
+    
+    /// Display real-time status from live indexer progress
+    async fn display_live_status(&self, state: &ProgressState) -> Result<()> {
+        println!("\n🚀 Live Indexer Status (PID: {}):", state.indexer_pid);
+        println!("{:-<60}", "");
+        
+        let progress_pct = if state.total_datasets > 0 {
+            (state.completed_count as f64 / state.total_datasets as f64) * 100.0
+        } else {
+            0.0
+        };
+        
+        let progress_bar = self.create_progress_bar(progress_pct);
+        let pending_count = state.total_datasets.saturating_sub(state.completed_count + state.failed_count);
+        
+        println!("📊 Progress: {} {}/{} datasets ({:.1}%)", 
+                progress_bar, state.completed_count, state.total_datasets, progress_pct);
+        
+        println!("⏰ Runtime: {} (started {})", 
+                state.elapsed_time(),
+                state.started_at.format("%H:%M:%S"));
+        
+        if state.processing_rate_per_min > 0.0 {
+            println!("🚀 Rate: {:.1} datasets/min", state.processing_rate_per_min);
+        }
+        
+        if let Some(eta) = state.estimated_completion_time {
+            let remaining_duration = eta.signed_duration_since(chrono::Utc::now());
+            if remaining_duration.num_minutes() > 0 {
+                println!("🎯 ETA: {} ({}m remaining)", 
+                        eta.format("%H:%M:%S"), 
+                        remaining_duration.num_minutes());
+            }
+        }
+        
+        println!("\n📈 Queue Status:");
+        println!("  ✅ Completed: {} datasets", state.completed_count);
+        if state.failed_count > 0 {
+            println!("  ❌ Failed: {} datasets", state.failed_count);
+        }
+        println!("  ⏳ Pending: {} datasets", pending_count);
+        
+        println!("\n💾 Last Updated: {}", state.last_updated.format("%H:%M:%S"));
+        
+        if self.detailed {
+            // For detailed view, also show database stats for additional context
+            if let Ok(db) = Database::new("ts_indexer.db") {
+                let stats = db.get_stats()?;
+                println!("\n📋 Database Statistics:");
+                println!("  🔢 Series Indexed: {}", stats.series_count);
+                println!("  📈 Records Indexed: {}", stats.record_count);
+            }
+        }
+        
+        Ok(())
+    }
+    
+    /// Create a visual progress bar
+    fn create_progress_bar(&self, percentage: f64) -> String {
+        let bar_width: usize = 30;
+        let filled = ((percentage / 100.0) * bar_width as f64) as usize;
+        let empty = bar_width.saturating_sub(filled);
+        
+        format!("[{}{}]", 
+                "█".repeat(filled), 
+                "░".repeat(empty))
+    }
+}
+
+#[derive(Args)]
+pub struct CleanCommand {
+    /// Force clean without confirmation prompt
+    #[arg(short, long, help = "Skip confirmation prompt and force clean all states")]
+    pub force: bool,
+    
+    /// Clean only progress files, keep database
+    #[arg(long, help = "Clean only progress tracking files, preserve database")]
+    pub progress_only: bool,
+}
+
+impl CleanCommand {
+    pub async fn execute(self) -> Result<()> {
+        println!("🧹 Clean Command - Reinitialize All States");
+        println!("{:-<60}", "");
+        
+        // Check for running indexers first
+        if let Ok(Some(state)) = ProgressState::read_from_file() {
+            if state.is_indexer_alive() {
+                println!("❌ Cannot clean while indexer is running!");
+                println!("   Active indexer PID: {}", state.indexer_pid);
+                println!("   Kill the indexer first: kill {}", state.indexer_pid);
+                return Ok(());
+            }
+        }
+        
+        // Show what will be cleaned
+        let mut items_to_clean = Vec::new();
+        
+        if std::path::Path::new("ts_indexer_progress.json").exists() {
+            items_to_clean.push("📄 Progress tracking file (ts_indexer_progress.json)");
+        }
+        
+        if !self.progress_only {
+            if std::path::Path::new("ts_indexer.db").exists() {
+                items_to_clean.push("🗄️  Main database (ts_indexer.db)");
+            }
+            if std::path::Path::new("ts_indexer.db-wal").exists() {
+                items_to_clean.push("📝 Database WAL file (ts_indexer.db-wal)");
+            }
+            if std::path::Path::new("ts_indexer.db-shm").exists() {
+                items_to_clean.push("🔗 Database shared memory (ts_indexer.db-shm)");
+            }
+            if std::path::Path::new("ts_indexer_readonly.db").exists() {
+                items_to_clean.push("📖 Temporary readonly database (ts_indexer_readonly.db)");
+            }
+        }
+        
+        if items_to_clean.is_empty() {
+            println!("✨ Nothing to clean - all states are already clear!");
+            return Ok(());
+        }
+        
+        println!("The following items will be removed:");
+        for item in &items_to_clean {
+            println!("  {}", item);
+        }
+        
+        if self.progress_only {
+            println!("\n💡 Progress-only mode: Database will be preserved");
+        } else {
+            println!("\n⚠️  WARNING: This will delete all indexed data!");
+            println!("   You will need to reindex all datasets from scratch.");
+        }
+        
+        // Confirmation prompt (unless --force)
+        if !self.force {
+            println!("\nAre you sure you want to continue? (y/N)");
+            let mut input = String::new();
+            std::io::stdin().read_line(&mut input)?;
+            let input = input.trim().to_lowercase();
+            
+            if input != "y" && input != "yes" {
+                println!("❌ Clean operation cancelled.");
+                return Ok(());
+            }
+        }
+        
+        // Perform the cleaning
+        let mut cleaned_count = 0;
+        let mut errors = Vec::new();
+        
+        // Clean progress files
+        for file in &["ts_indexer_progress.json", "ts_indexer_progress.json.tmp"] {
+            if std::path::Path::new(file).exists() {
+                match std::fs::remove_file(file) {
+                    Ok(_) => {
+                        println!("✅ Removed {}", file);
+                        cleaned_count += 1;
+                    }
+                    Err(e) => {
+                        errors.push(format!("Failed to remove {}: {}", file, e));
+                    }
+                }
+            }
+        }
+        
+        // Clean database files (unless progress-only mode)
+        if !self.progress_only {
+            for file in &["ts_indexer.db", "ts_indexer.db-wal", "ts_indexer.db-shm", "ts_indexer_readonly.db"] {
+                if std::path::Path::new(file).exists() {
+                    match std::fs::remove_file(file) {
+                        Ok(_) => {
+                            println!("✅ Removed {}", file);
+                            cleaned_count += 1;
+                        }
+                        Err(e) => {
+                            errors.push(format!("Failed to remove {}: {}", file, e));
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Report results
+        println!("\n🎉 Clean operation completed!");
+        println!("   ✅ {} items removed successfully", cleaned_count);
+        
+        if !errors.is_empty() {
+            println!("   ❌ {} errors occurred:", errors.len());
+            for error in errors {
+                println!("      {}", error);
+            }
+        }
+        
+        if !self.progress_only {
+            println!("\n💡 Next steps:");
+            println!("   • Run 'ts-indexer index' to rebuild the database");
+            println!("   • All datasets will need to be reindexed from S3");
+        } else {
+            println!("\n💡 Database preserved - existing indexed data is still available");
         }
         
         Ok(())

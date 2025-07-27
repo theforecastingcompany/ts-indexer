@@ -541,7 +541,39 @@ impl Database {
     }
     
     /// Get indexing progress statistics
+    /// Clean up stale "in_progress" datasets that have been running too long
+    /// This fixes the issue where datasets get stuck in "in_progress" status after crashes
+    pub fn cleanup_stale_in_progress(&self, max_duration_hours: i64) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        
+        // Calculate cutoff time (current time - max_duration_hours)
+        let cutoff_timestamp = chrono::Utc::now() - chrono::Duration::hours(max_duration_hours);
+        let cutoff_timestamp_secs = cutoff_timestamp.timestamp();
+        
+        // Reset stale in_progress datasets to pending
+        let mut stmt = conn.prepare(r#"
+            UPDATE datasets 
+            SET indexing_status = 'pending',
+                indexing_started_at = NULL,
+                indexing_error = 'Reset from stale in_progress status after ' || ? || ' hours'
+            WHERE indexing_status = 'in_progress'
+            AND indexing_started_at IS NOT NULL  
+            AND indexing_started_at < ?
+        "#)?;
+        
+        let rows_updated = stmt.execute([max_duration_hours.to_string(), cutoff_timestamp_secs.to_string()])?;
+        
+        if rows_updated > 0 {
+            info!("🧹 Cleaned up {} stale in_progress datasets (older than {}h)", rows_updated, max_duration_hours);
+        }
+        
+        Ok(rows_updated)
+    }
+
     pub fn get_indexing_progress(&self) -> Result<IndexingProgress> {
+        // First cleanup any stale in_progress datasets (older than 1 hour)
+        let _ = self.cleanup_stale_in_progress(1);
+        
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(r#"
             SELECT 
