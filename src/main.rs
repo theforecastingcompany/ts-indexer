@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use tracing::{info, Level};
-use tracing_subscriber;
+use tracing_subscriber::{self, EnvFilter};
 
 mod cli;
 mod db;
@@ -9,7 +9,7 @@ mod indexer;
 mod s3;
 mod search;
 
-use cli::commands::{IndexCommand, SearchCommand, StatsCommand};
+use cli::commands::{IndexCommand, SearchCommand, StatsCommand, ProgressCommand};
 
 #[derive(Parser)]
 #[command(name = "ts-indexer")]
@@ -32,16 +32,25 @@ enum Commands {
     Search(SearchCommand),
     /// Show indexing statistics
     Stats(StatsCommand),
+    /// Show indexing progress and resume status
+    Progress(ProgressCommand),
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     
-    // Initialize logging
-    let level = if cli.verbose { Level::DEBUG } else { Level::INFO };
+    // Initialize logging with filtered levels
+    let base_level = if cli.verbose { Level::DEBUG } else { Level::INFO };
+    
     tracing_subscriber::fmt()
-        .with_max_level(level)
+        .with_max_level(base_level)
+        .with_env_filter(
+            EnvFilter::new(format!(
+                "ts_indexer={},aws_smithy_runtime=warn,aws_sdk_s3=warn,aws_config=warn,hyper_util=warn",
+                if cli.verbose { "debug" } else { "info" }
+            ))
+        )
         .init();
     
     info!("Starting TS-Indexer v{}", env!("CARGO_PKG_VERSION"));
@@ -50,5 +59,6 @@ async fn main() -> Result<()> {
         Commands::Index(cmd) => cmd.execute().await,
         Commands::Search(cmd) => cmd.execute().await,
         Commands::Stats(cmd) => cmd.execute().await,
+        Commands::Progress(cmd) => cmd.execute().await,
     }
 }

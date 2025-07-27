@@ -444,6 +444,48 @@ impl S3Client {
         file_name.replace("_metadata.yaml", "").replace("_metadata.yml", "")
     }
     
+    /// Find the correct case-sensitive directory name for a dataset
+    pub async fn find_case_sensitive_dataset_dir(&self, data_prefix: &str, dataset_name: &str) -> Result<Option<String>> {
+        // List all directories in the data prefix
+        let objects = self.list_objects(data_prefix, None).await?;
+        
+        // Convert dataset name to lowercase for comparison
+        let dataset_name_lower = dataset_name.to_lowercase();
+        debug!("Looking for dataset '{}' (lowercase: '{}') in {} objects", dataset_name, dataset_name_lower, objects.len());
+        
+        // Debug: Show first few object keys to understand the structure
+        for (i, obj) in objects.iter().take(5).enumerate() {
+            debug!("Object {}: '{}'", i, obj.key);
+        }
+        
+        // Extract unique directory names from file paths
+        let mut directories = std::collections::HashSet::new();
+        for obj in objects {
+            if let Some(remaining_path) = obj.key.strip_prefix(data_prefix) {
+                // Extract the first directory component (dataset directory)
+                if let Some(dir_name) = remaining_path.split('/').next() {
+                    if !dir_name.is_empty() {
+                        directories.insert(dir_name.to_string());
+                    }
+                }
+            }
+        }
+        
+        debug!("Found {} unique directories", directories.len());
+        
+        // Find directories that match case-insensitively
+        for dir_name in directories {
+            debug!("Checking directory: '{}' (lowercase: '{}')", dir_name, dir_name.to_lowercase());
+            if dir_name.to_lowercase() == dataset_name_lower {
+                debug!("✅ Found case-sensitive match: {} -> {}", dataset_name, dir_name);
+                return Ok(Some(dir_name));
+            }
+        }
+        
+        debug!("❌ No directory found for dataset: {}", dataset_name);
+        Ok(None)
+    }
+
     /// Detect file format from extension
     pub fn detect_file_format(&self, key: &str) -> FileFormat {
         let key_lower = key.to_lowercase();
@@ -480,18 +522,34 @@ impl S3Client {
         // Extract series ID columns from metadata
         let series_id_columns = self.extract_series_id_columns(metadata);
         
-        // Sample a few files to get statistics (analyzing all files would be too slow)
-        let sample_size = (data_files.len().min(5)).max(1);
-        let sample_files = &data_files[..sample_size];
+        // Analyze ALL files in parallel for better load balancing
+        info!("Analyzing ALL {} parquet files for precise series counts", data_files.len());
+        
+        use futures::stream::{self, StreamExt};
+        use std::sync::Arc;
+        
+        let series_id_columns = Arc::new(series_id_columns);
+        let max_concurrent = std::cmp::min(data_files.len(), 4); // Limit to 4 concurrent file analyses per dataset
+        
+        let results: Vec<_> = stream::iter(data_files.iter().enumerate())
+            .map(|(i, file)| {
+                let series_id_columns = series_id_columns.clone();
+                let file_key = file.key.clone();
+                async move {
+                    debug!("Analyzing file {}/{}: {}", i + 1, data_files.len(), file_key);
+                    (i, self.analyze_parquet_file(&file_key, &series_id_columns).await)
+                }
+            })
+            .buffer_unordered(max_concurrent)
+            .collect()
+            .await;
         
         let mut all_series_lengths = Vec::new();
         let mut unique_series = std::collections::HashSet::new();
         let mut total_records = 0i64;
         
-        for (i, file) in sample_files.iter().enumerate() {
-            debug!("Analyzing file {}/{}: {}", i + 1, sample_size, file.key);
-            
-            match self.analyze_parquet_file(&file.key, &series_id_columns).await {
+        for (i, result) in results {
+            match result {
                 Ok(file_stats) => {
                     // Add unique series from this file
                     for series_id in file_stats.unique_series {
@@ -503,18 +561,17 @@ impl S3Client {
                     total_records += file_stats.total_records;
                 }
                 Err(e) => {
-                    warn!("Failed to analyze file {}: {}", file.key, e);
+                    warn!("Failed to analyze file: {}", e);
                     continue;
                 }
             }
         }
         
-        // Extrapolate statistics to full dataset
-        let extrapolation_factor = data_files.len() as f64 / sample_size as f64;
-        let estimated_total_records = (total_records as f64 * extrapolation_factor) as i64;
-        let estimated_unique_series = (unique_series.len() as f64 * extrapolation_factor) as i64;
+        // Use actual counts (no extrapolation)
+        let actual_unique_series = unique_series.len() as i64;
+        let actual_total_records = total_records;
         
-        // Calculate series length statistics
+        // Calculate series length statistics from all analyzed data
         let (avg_length, min_length, max_length) = if all_series_lengths.is_empty() {
             (0.0, 0, 0)
         } else {
@@ -525,16 +582,16 @@ impl S3Client {
             (avg, min, max)
         };
         
-        info!("Dataset statistics: {} unique series, {} total records, avg length: {:.1}", 
-              estimated_unique_series, estimated_total_records, avg_length);
+        info!("PRECISE Dataset statistics: {} unique series, {} total records, avg length: {:.1}", 
+              actual_unique_series, actual_total_records, avg_length);
         
         Ok(SeriesStatistics {
-            unique_series_count: estimated_unique_series,
-            total_records: estimated_total_records,
+            unique_series_count: actual_unique_series,
+            total_records: actual_total_records,
             avg_series_length: avg_length,
             min_series_length: min_length,
             max_series_length: max_length,
-            series_id_columns,
+            series_id_columns: (*series_id_columns).clone(),
         })
     }
     

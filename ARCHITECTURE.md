@@ -2,30 +2,31 @@
 
 ## Overview
 
-TS-Indexer is a high-performance, parallel time-series indexing system built in Rust. It processes massive datasets (3-10TB) from S3, computes precise statistics, and provides sub-second search capabilities using DuckDB.
+TS-Indexer is a high-performance, resumable parallel time-series indexing system built in Rust. It processes massive datasets (3-10TB) from S3 with graceful shutdown capabilities, automatic resume functionality, and computes precise statistics using DuckDB for sub-second search capabilities.
 
 ## System Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                           TS-Indexer System                                │
+│                     Resumable TS-Indexer System                            │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
 │  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐        │
-│  │   CLI Layer     │───▶│  Parallel Core  │───▶│   Storage Layer │        │
+│  │   CLI Layer     │───▶│ Resumable Core  │───▶│ Persistent Store│        │
 │  │                 │    │                 │    │                 │        │
 │  │ • Clap Commands │    │ • Worker Pool   │    │ • DuckDB Index  │        │
-│  │ • Progress Bars │    │ • Semaphore     │    │ • Thread Safety │        │
-│  │ • Error Handling│    │ • Task Queue    │    │ • Precise Stats │        │
+│  │ • Progress Bars │    │ • Semaphore     │    │ • State Tracking│        │
+│  │ • Signal Handling│   │ • Task Queue    │    │ • Thread Safety │        │
+│  │ • Graceful Exit │    │ • Resume Logic  │    │ • Precise Stats │        │
 │  └─────────────────┘    └─────────────────┘    └─────────────────┘        │
 │           │                       │                       │                │
 │           ▼                       ▼                       ▼                │
 │  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐        │
-│  │   Data Layer    │    │  Search Engine  │    │  Statistics     │        │
-│  │                 │    │                 │    │   Engine        │        │
-│  │ • S3 Integration│    │ • Fuzzy Matching│    │ • Parquet       │        │
-│  │ • Metadata Parse│    │ • Relevance     │    │   Analysis      │        │
-│  │ • Format Support│    │ • Multi-format  │    │ • Series Counting│       │
+│  │   Data Layer    │    │  Search Engine  │    │   Resilience    │        │
+│  │                 │    │                 │    │    Engine       │        │
+│  │ • S3 Integration│    │ • Fuzzy Matching│    │ • Status Mgmt   │        │
+│  │ • Metadata Parse│    │ • Relevance     │    │ • Error Recovery│        │
+│  │ • Format Support│    │ • Multi-format  │    │ • Progress Save │        │
 │  └─────────────────┘    └─────────────────┘    └─────────────────┘        │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -33,7 +34,48 @@ TS-Indexer is a high-performance, parallel time-series indexing system built in 
 
 ## Core Components
 
-### 1. Parallel Processing Engine
+### 1. Dataset Discovery & Case-Insensitive Matching
+
+**Recent Major Fix: Case-Insensitive Dataset Discovery**
+
+The indexer now correctly discovers ALL available datasets by implementing case-insensitive matching between metadata filenames and S3 directory names:
+
+```rust
+// Fixed: Case-insensitive dataset directory matching
+pub async fn find_case_sensitive_dataset_dir(&self, data_prefix: &str, dataset_name: &str) -> Result<Option<String>> {
+    let objects = self.list_objects(data_prefix, None).await?;
+    let dataset_name_lower = dataset_name.to_lowercase();
+    
+    // Extract unique directory names from file paths (S3 returns files, not directories)
+    let mut directories = std::collections::HashSet::new();
+    for obj in objects {
+        if let Some(remaining_path) = obj.key.strip_prefix(data_prefix) {
+            if let Some(dir_name) = remaining_path.split('/').next() {
+                if !dir_name.is_empty() {
+                    directories.insert(dir_name.to_string());
+                }
+            }
+        }
+    }
+    
+    // Find case-insensitive match
+    for dir_name in directories {
+        if dir_name.to_lowercase() == dataset_name_lower {
+            return Ok(Some(dir_name));  // Return actual case-sensitive directory name
+        }
+    }
+    
+    Ok(None)
+}
+```
+
+**Key Discovery Process Improvements:**
+1. **Complete Discovery**: Lists ALL metadata files first (109+ datasets), not just a subset
+2. **Max-Files Logic Fix**: Applies `--max-files` limit AFTER discovery, not during S3 listing
+3. **Case-Insensitive Matching**: Handles mismatches like `alibaba_cluster_trace_2018_metadata.yaml` → `ALIBABA_CLUSTER_TRACE_2018/`
+4. **Directory Extraction**: Correctly extracts directory names from S3 file paths since S3 doesn't return directory objects
+
+### 2. Parallel Processing Engine
 
 #### Worker Pool Architecture
 ```rust
@@ -60,7 +102,7 @@ TS-Indexer is a high-performance, parallel time-series indexing system built in 
 - **Graceful Error Handling**: Individual dataset failures don't stop the entire process
 - **Progress Tracking**: Real-time updates with `indicatif::MultiProgress`
 
-### 2. Database Layer
+### 3. Database Layer
 
 #### Thread-Safe Database Operations
 ```rust
@@ -76,11 +118,22 @@ pub struct Database {
 - **Connection Sharing**: Single connection shared across all workers
 - **ACID Compliance**: DuckDB ensures data consistency
 
-#### Enhanced Schema for Precise Statistics
+**Recent Fixes:**
+- **Corrected Stats Query**: Fixed `get_stats()` to query computed statistics from `datasets` table instead of empty intermediate tables
+- **Proper Statistics Storage**: Statistics are now stored in the main `datasets` table with `indexing_status = 'completed'`
+
+#### Enhanced Schema for Resumable Processing
 ```sql
 CREATE TABLE datasets (
     dataset_id VARCHAR PRIMARY KEY,
     name VARCHAR NOT NULL,
+    
+    -- Resumability and status tracking  
+    indexing_status VARCHAR DEFAULT 'pending', -- pending/in_progress/completed/failed
+    indexing_started_at BIGINT,                -- Unix timestamp
+    indexing_completed_at BIGINT,              -- Unix timestamp  
+    indexing_error TEXT,                       -- Error message if failed
+    
     -- Precise statistics columns
     total_series BIGINT DEFAULT 0,        -- Exact count from data
     total_records BIGINT DEFAULT 0,       -- Actual record count  
@@ -88,14 +141,23 @@ CREATE TABLE datasets (
     avg_series_length DOUBLE,             -- Computed average
     min_series_length BIGINT,             -- Minimum series length
     max_series_length BIGINT,             -- Maximum series length
+    
+    -- File and metadata tracking
+    data_file_count BIGINT,               -- Number of parquet files
+    metadata_file_path VARCHAR,           -- Path to metadata YAML
+    
     -- Metadata and timestamps
     description TEXT,
     created_at BIGINT NOT NULL,
     updated_at BIGINT NOT NULL
 );
+
+-- Indexes for resumable processing
+CREATE INDEX idx_datasets_status ON datasets(indexing_status);
+CREATE INDEX idx_datasets_started ON datasets(indexing_started_at);
 ```
 
-### 3. Statistics Computation Engine
+### 4. Statistics Computation Engine
 
 #### Precise Statistics Methodology
 
@@ -166,7 +228,7 @@ let series_lengths: Vec<i64> = match count_column.dtype() {
 };
 ```
 
-### 4. Search Engine
+### 5. Search Engine
 
 #### Fuzzy Search with Precise Results
 ```rust
@@ -346,12 +408,41 @@ if dataset_size > 1_000_000_000 {  // 1GB+
 }
 ```
 
+## Recent Fixes & Improvements
+
+### Major Bug Fixes Completed ✅
+
+1. **Case-Insensitive Dataset Discovery**
+   - **Problem**: Only 12 datasets discovered instead of 109+ due to case mismatches
+   - **Root Cause**: Metadata files use lowercase names (`alibaba_cluster_trace_2018_metadata.yaml`) but S3 directories use uppercase (`ALIBABA_CLUSTER_TRACE_2018/`)
+   - **Solution**: Implemented `find_case_sensitive_dataset_dir()` with case-insensitive matching
+   - **Impact**: Now discovers ALL available datasets
+
+2. **Corrected Max-Files Logic**
+   - **Problem**: `--max-files` was applied during S3 discovery, limiting which datasets were even considered
+   - **Root Cause**: Filter was applied too early in the pipeline
+   - **Solution**: Apply limit AFTER complete discovery, before processing
+   - **Impact**: Proper dataset limiting for testing without losing discoverability
+
+3. **Fixed Stats Computation**
+   - **Problem**: `get_stats()` returned 0 series/records due to querying empty intermediate tables
+   - **Root Cause**: Query looked at `series_metadata` and `time_series` tables instead of computed statistics
+   - **Solution**: Updated query to use `datasets` table with `indexing_status = 'completed'`
+   - **Impact**: Accurate statistics showing real data counts
+
+4. **Improved Logging UX**
+   - **Problem**: Verbose AWS SDK logging made output unreadable
+   - **Root Cause**: Default logging level included low-level AWS operations
+   - **Solution**: Added logging filters for AWS SDK components
+   - **Impact**: Clean, actionable log output for users
+
 ## Future Enhancements
 
-### Phase 2: Advanced Parallel Features
+### Phase 2: Advanced Resumable Features  
 - **Adaptive Concurrency**: Dynamic worker scaling based on system load
 - **Work Stealing**: Redistribute tasks from slow workers to fast workers
-- **Checkpoint/Resume**: Save progress and resume from interruptions
+- **Smart Retry Logic**: Exponential backoff for failed datasets
+- **Incremental Updates**: Detect and process only changed datasets
 - **Distributed Processing**: Scale across multiple machines
 
 ### Phase 3: Performance Optimizations
@@ -366,4 +457,4 @@ if dataset_size > 1_000_000_000 {  // 1GB+
 - **Data Validation**: Comprehensive data quality checks
 - **Backup/Recovery**: Automated backup and disaster recovery
 
-This architecture provides a solid foundation for high-performance, scalable time-series indexing with precise statistics computation and robust error handling.
+This architecture provides a solid foundation for high-performance, scalable time-series indexing with precise statistics computation, robust error handling, and complete dataset discovery.

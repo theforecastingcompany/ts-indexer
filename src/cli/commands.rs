@@ -29,28 +29,35 @@ pub struct IndexCommand {
     #[arg(long)]
     pub max_files: Option<usize>,
     
-    /// Force rebuild of existing index
-    #[arg(long)]
+    /// Force rebuild of existing index (ignore completed datasets)
+    #[arg(long, help = "Force reindex all datasets, ignoring completion status")]
     pub force: bool,
     
-    /// Number of concurrent workers for parallel processing
-    #[arg(short, long, default_value = "8")]
+    /// Number of concurrent workers for resumable parallel processing
+    #[arg(short, long, default_value = "8", help = "Number of parallel workers (1-16, default: 8)")]
     pub concurrency: usize,
 }
 
 impl IndexCommand {
     pub async fn execute(self) -> Result<()> {
-        info!("Starting indexing process...");
-        info!("Bucket: {}, Prefix: {}", self.bucket, self.prefix);
-        info!("Metadata prefix: {}", self.metadata_prefix);
-        info!("Region: {}", self.region);
+        if self.force {
+            info!("🔄 Starting resumable indexing process with FORCE REBUILD...");
+        } else {
+            info!("🚀 Starting resumable indexing process...");
+        }
+        info!("📍 Bucket: {}, Prefix: {}", self.bucket, self.prefix);
+        info!("📁 Metadata prefix: {}", self.metadata_prefix);
+        info!("🌍 Region: {}", self.region);
+        info!("👥 Workers: {} parallel threads", self.concurrency);
         
         if let Some(max) = self.max_files {
-            info!("Max files to process: {}", max);
+            info!("🔢 Max files to process: {} (testing mode)", max);
         }
         
         if self.force {
-            info!("Force rebuild enabled");
+            info!("⚠️  Force rebuild enabled - will reindex all datasets regardless of completion status");
+        } else {
+            info!("📊 Resume mode enabled - will skip already completed datasets");
         }
         
         // Initialize database
@@ -59,20 +66,25 @@ impl IndexCommand {
         // Initialize S3 client
         let s3_client = S3Client::new(self.bucket, self.region).await?;
         
-        // Create indexer and run
+        // Create indexer and run with resumable functionality
         let indexer = Indexer::new(db, s3_client);
-        let stats = indexer.index_data_parallel(
+        let stats = indexer.index_data_parallel_with_resume(
             &self.prefix, 
             &self.metadata_prefix, 
             self.max_files, 
-            self.concurrency
+            self.concurrency,
+            self.force // Use force flag for reindexing
         ).await?;
         
-        println!("Indexing completed!");
-        println!("Files processed: {}", stats.files_processed);
-        println!("Series indexed: {}", stats.series_indexed);
-        println!("Records indexed: {}", stats.records_indexed);
-        println!("Processing time: {}ms", stats.processing_time_ms);
+        println!("\n🎉 Resumable indexing completed!");
+        println!("📂 Datasets processed: {}", stats.files_processed);
+        println!("📊 Series indexed: {}", stats.series_indexed);
+        println!("📈 Records indexed: {}", stats.records_indexed);
+        println!("⏱️  Processing time: {}ms", stats.processing_time_ms);
+        
+        if !self.force {
+            println!("\n💡 Tip: Use --force to reindex completed datasets, or Ctrl+C for graceful shutdown");
+        }
         
         Ok(())
     }
@@ -80,19 +92,20 @@ impl IndexCommand {
 
 #[derive(Args)]
 pub struct SearchCommand {
-    /// Search query (fuzzy search across themes, IDs, names)
+    /// Search query (fuzzy search across themes, IDs, names, descriptions)
+    #[arg(help = "Search term to find datasets (supports partial matches)")]
     pub query: String,
     
     /// Limit number of results
-    #[arg(short, long, default_value = "10")]
+    #[arg(short, long, default_value = "10", help = "Maximum number of results to return")]
     pub limit: usize,
     
     /// Output format
-    #[arg(short, long, value_enum, default_value = "table")]
+    #[arg(short, long, value_enum, default_value = "table", help = "Output format: table, json, or csv")]
     pub format: OutputFormat,
     
     /// Show time-series data preview
-    #[arg(long)]
+    #[arg(long, help = "Show additional dataset preview information")]
     pub preview: bool,
 }
 
@@ -161,8 +174,8 @@ impl SearchCommand {
 
 #[derive(Args)]  
 pub struct StatsCommand {
-    /// Show detailed statistics
-    #[arg(short, long)]
+    /// Show detailed statistics with breakdowns
+    #[arg(short, long, help = "Show detailed statistics including data breakdowns")]
     pub detailed: bool,
 }
 
@@ -174,8 +187,28 @@ impl StatsCommand {
             info!("Detailed mode enabled");
         }
         
-        // Initialize database
-        let db = Database::new("ts_indexer.db")?;
+        // Try to initialize database, handle lock conflicts gracefully
+        let db = match Database::new("ts_indexer.db") {
+            Ok(db) => db,
+            Err(e) if e.to_string().contains("Conflicting lock") => {
+                println!("⏳ Indexer is currently running, trying read-only access...");
+                // Try opening in read-only mode by connecting to a copy
+                match std::fs::copy("ts_indexer.db", "ts_indexer_readonly.db") {
+                    Ok(_) => {
+                        let readonly_db = Database::new("ts_indexer_readonly.db")?;
+                        // Clean up the temporary file after we're done
+                        let _ = std::fs::remove_file("ts_indexer_readonly.db");
+                        readonly_db
+                    },
+                    Err(_) => {
+                        println!("❌ Cannot access database while indexer is running.");
+                        println!("💡 Try: kill the indexer gracefully (Ctrl+C) or wait for it to complete.");
+                        return Ok(());
+                    }
+                }
+            },
+            Err(e) => return Err(e),
+        };
         
         // Get statistics
         let stats = db.get_stats()?;
@@ -193,5 +226,102 @@ impl StatsCommand {
         }
         
         Ok(())
+    }
+}
+
+#[derive(Args)]
+pub struct ProgressCommand {
+    /// Show detailed progress with dataset breakdown
+    #[arg(short, long)]
+    pub detailed: bool,
+}
+
+impl ProgressCommand {
+    pub async fn execute(self) -> Result<()> {
+        info!("Showing indexing progress...");
+        
+        // Try to initialize database, handle lock conflicts gracefully
+        let db = match Database::new("ts_indexer.db") {
+            Ok(db) => db,
+            Err(e) if e.to_string().contains("Conflicting lock") => {
+                println!("⏳ Indexer is currently running, trying read-only access...");
+                // Try opening in read-only mode by connecting to a copy
+                match std::fs::copy("ts_indexer.db", "ts_indexer_readonly.db") {
+                    Ok(_) => {
+                        let readonly_db = Database::new("ts_indexer_readonly.db")?;
+                        // Clean up the temporary file after we're done
+                        let _ = std::fs::remove_file("ts_indexer_readonly.db");
+                        readonly_db
+                    },
+                    Err(_) => {
+                        println!("❌ Cannot access database while indexer is running.");
+                        println!("💡 Try: kill the indexer gracefully (Ctrl+C) or wait for it to complete.");
+                        return Ok(());
+                    }
+                }
+            },
+            Err(e) => return Err(e),
+        };
+        
+        // Get progress statistics
+        let progress = db.get_indexing_progress()?;
+        
+        println!("\n📊 Indexing Progress:");
+        println!("{:-<50}", "");
+        println!("✅ Completed: {} datasets", progress.completed);
+        println!("🔄 In Progress: {} datasets", progress.in_progress);
+        println!("❌ Failed: {} datasets", progress.failed);
+        println!("⏳ Pending: {} datasets", progress.pending);
+        println!("{:-<50}", "");
+        println!("📈 Total: {} datasets", progress.total());
+        println!("🎯 Completion: {:.1}%", progress.completion_percentage());
+        
+        if self.detailed {
+            println!("\n📋 Detailed Breakdown:");
+            
+            // Show failed datasets
+            if progress.failed > 0 {
+                println!("\n❌ Failed Datasets:");
+                let failed_datasets = db.get_datasets_by_status(crate::db::IndexingStatus::Failed)?;
+                for dataset in failed_datasets.iter().take(10) {
+                    let error_msg = dataset.indexing_error.as_deref().unwrap_or("Unknown error");
+                    println!("  • {}: {}", dataset.name, error_msg);
+                }
+                if failed_datasets.len() > 10 {
+                    println!("  ... and {} more", failed_datasets.len() - 10);
+                }
+            }
+            
+            // Show in-progress datasets
+            if progress.in_progress > 0 {
+                println!("\n🔄 In Progress Datasets:");
+                let in_progress_datasets = db.get_datasets_by_status(crate::db::IndexingStatus::InProgress)?;
+                for dataset in in_progress_datasets.iter().take(5) {
+                    if let Some(started) = dataset.indexing_started_at {
+                        let duration = chrono::Utc::now().signed_duration_since(started);
+                        println!("  • {} (running for {})", dataset.name, humanize_duration(duration));
+                    } else {
+                        println!("  • {}", dataset.name);
+                    }
+                }
+            }
+        }
+        
+        Ok(())
+    }
+}
+
+/// Convert duration to human-readable format
+fn humanize_duration(duration: chrono::Duration) -> String {
+    let total_seconds = duration.num_seconds();
+    
+    if total_seconds < 60 {
+        format!("{}s", total_seconds)
+    } else if total_seconds < 3600 {
+        format!("{}m {}s", total_seconds / 60, total_seconds % 60)
+    } else {
+        let hours = total_seconds / 3600;
+        let minutes = (total_seconds % 3600) / 60;
+        format!("{}h {}m", hours, minutes)
     }
 }

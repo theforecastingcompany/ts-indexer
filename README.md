@@ -1,6 +1,6 @@
 # TS-Indexer
 
-High-performance parallel time-series indexer for S3 data using Rust, DuckDB, and fuzzy search with precise statistics.
+High-performance parallel time-series indexer for S3 data using Rust, DuckDB, and fuzzy search with resumable processing and graceful shutdown.
 
 ## Overview
 
@@ -10,32 +10,36 @@ TS-Indexer is designed to make 3-10 TB of time-series data stored in S3 blazingl
 - **Parallel processing** with configurable worker pools (8x speed improvement)  
 - **Precise statistics** computed from actual parquet files
 - **Real-time progress tracking** with visual progress bars
+- **Resumable indexing** with automatic progress preservation
+- **Graceful shutdown** on SIGINT/SIGTERM with state preservation
 - **Fuzzy search** by theme, series ID, dataset name, and metadata
 - **High-performance indexing** using DuckDB's columnar analytics
 - **Thread-safe database operations** with concurrent writes
-- **CLI interface** for indexing and search operations
+- **Cross-platform signal handling** (Unix + Windows)
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                 Parallel Indexing System                    │
-├─────────────────┬─────────────────┬─────────────────────────┤
-│   Coordinator   │  Worker Pool    │      Progress           │
-│  ✅ Metadata   │  ✅ Worker 1   │  ✅ Real-time Bar      │
-│     Discovery   │  ✅ Worker 2   │  ✅ Dataset Status     │  
-│  ✅ Work Queue │  ✅ Worker 3   │  ✅ Completion Time    │
-│  ✅ Semaphore  │  ✅ Worker N   │  ✅ Error Tracking     │
-│     Control     │  (up to 8)     │                         │
-└─────────────────┴─────────────────┴─────────────────────────┘
-                           │
-                           ▼
-               ┌─────────────────────────┐
-               │   Thread-Safe Database  │
-               │  ✅ Arc<Mutex<Conn>>   │
-               │  ✅ Concurrent Writes  │
-               │  ✅ No Lock Conflicts  │
-               └─────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                  Resumable Parallel Indexing System                 │
+├─────────────────┬─────────────────┬─────────────────┬───────────────┤
+│   Coordinator   │  Worker Pool    │    Progress     │  Resilience   │
+│  ✅ Metadata   │  ✅ Worker 1   │  ✅ Real-time   │  ✅ Resume    │
+│     Discovery   │  ✅ Worker 2   │     Progress    │     Support   │  
+│  ✅ Work Queue │  ✅ Worker 3   │  ✅ Dataset     │  ✅ Graceful  │
+│  ✅ Semaphore  │  ✅ Worker N   │     Tracking    │     Shutdown  │
+│     Control     │  (up to 16)    │  ✅ Error       │  ✅ Signal    │
+│                 │                │     Handling    │     Handling  │
+└─────────────────┴─────────────────┴─────────────────┴───────────────┘
+                                     │
+                                     ▼
+                         ┌─────────────────────────┐
+                         │  Persistent Database    │
+                         │  ✅ State Tracking     │
+                         │  ✅ Resume Progress    │
+                         │  ✅ Indexing Status    │
+                         │  ✅ Thread-Safe Ops    │
+                         └─────────────────────────┘
 ```
 
 ## Prerequisites
@@ -106,12 +110,14 @@ Configure AWS credentials using one of these methods:
 For macOS users, you'll need to set the library path for DuckDB:
 
 ```bash
+export LIBRARY_PATH="/opt/homebrew/opt/duckdb/lib:$LIBRARY_PATH"
 export DYLD_LIBRARY_PATH=/opt/homebrew/lib:$DYLD_LIBRARY_PATH
 ```
 
 Add this to your `~/.zshrc` or `~/.bash_profile` for permanent setup:
 
 ```bash
+echo 'export LIBRARY_PATH="/opt/homebrew/opt/duckdb/lib:$LIBRARY_PATH"' >> ~/.zshrc
 echo 'export DYLD_LIBRARY_PATH=/opt/homebrew/lib:$DYLD_LIBRARY_PATH' >> ~/.zshrc
 source ~/.zshrc
 ```
@@ -127,17 +133,20 @@ Test that ts-indexer is working:
 
 ## Usage Guide
 
-### 1. Index S3 Data with Parallel Processing
+### 1. Index S3 Data with Resumable Parallel Processing
 
-Index time-series data from S3 with configurable parallel workers:
+Index time-series data from S3 with graceful shutdown and automatic resume:
 
 ```bash
-# Parallel indexing with default 8 workers (RECOMMENDED)
+# Resumable parallel indexing with default 8 workers (RECOMMENDED)
 ts-indexer index \
   --bucket tfc-modeling-data-eu-west-3 \
   --prefix lotsa_long_format/ \
   --metadata-prefix metadata/lotsa_long_format/ \
   --region eu-west-3
+
+# Interrupt safely with Ctrl+C - progress is preserved!
+# Resume by running the same command - completed datasets are skipped
 
 # Custom concurrency for system optimization
 ts-indexer index \
@@ -145,14 +154,7 @@ ts-indexer index \
   --prefix lotsa_long_format/ \
   --concurrency 4  # Use 4 workers instead of 8
 
-# Test with limited files (recommended for first run)
-ts-indexer --verbose index \
-  --bucket tfc-modeling-data-eu-west-3 \
-  --prefix lotsa_long_format/ \
-  --max-files 10 \
-  --concurrency 4
-
-# Force rebuild with progress tracking
+# Force reindex all datasets (ignore completed status)
 ts-indexer index \
   --bucket tfc-modeling-data-eu-west-3 \
   --prefix lotsa_long_format/ \
@@ -160,10 +162,13 @@ ts-indexer index \
   --concurrency 8
 ```
 
-**🚀 Parallel Processing Features:**
+**🚀 Resumable Processing Features:**
+- **Graceful Shutdown**: Ctrl+C triggers safe shutdown with progress preservation
+- **Automatic Resume**: Restart with same command - completed datasets are skipped  
+- **Progress Persistence**: Database tracks completion status across runs
 - **Configurable Workers**: Adjust `--concurrency` (1-16) based on system resources
 - **Real-time Progress**: Visual progress bar showing completion status
-- **Load Balancing**: Automatic work distribution across available workers  
+- **Cross-Platform**: Works on Unix (SIGINT/SIGTERM) and Windows (Ctrl+C)
 - **Error Resilience**: Individual dataset failures don't stop the process
 - **Performance**: 4-8x speed improvement over sequential processing
 
@@ -174,7 +179,7 @@ ts-indexer index \
 - `--region <REGION>`: AWS region (default: "eu-west-3")
 - `--concurrency <N>`: Number of parallel workers (default: 8)
 - `--max-files <N>`: Limit processing to N files (useful for testing)
-- `--force`: Force rebuild of existing index
+- `--force`: Force rebuild of existing index (ignore completed datasets)
 - `--verbose`: Enable detailed logging (use before subcommand)
 
 **📊 Precise Statistics Computed:**
@@ -183,13 +188,18 @@ ts-indexer index \
 3. **Series Length Statistics**: Average, minimum, and maximum series lengths
 4. **Series ID Columns**: JSON array of columns used for series identification
 
-**Indexing Process:**
-1. **Discovery**: Lists S3 metadata files in parallel
-2. **Work Distribution**: Creates tasks for parallel worker pool
-3. **Parallel Processing**: Workers download and analyze parquet files simultaneously
-4. **Statistics Computation**: Precise counting of series and records from actual data
-5. **Database Storage**: Thread-safe concurrent writes to DuckDB
-6. **Progress Tracking**: Real-time updates with completion estimates
+**Resumable Indexing Process:**
+1. **State Recovery**: Check database for previously completed datasets
+2. **Discovery**: Lists **ALL** S3 metadata files (case-insensitive matching) before filtering
+3. **Work Distribution**: Creates tasks for parallel worker pool after discovery
+4. **Case-Insensitive Matching**: Automatically handles case differences between metadata and data directories
+5. **Signal Handling**: Sets up graceful shutdown listeners (SIGINT/SIGTERM)
+6. **Parallel Processing**: Workers download and analyze parquet files simultaneously
+7. **Status Tracking**: Mark datasets as pending → in_progress → completed/failed
+8. **Statistics Computation**: Precise counting of series and records from actual data
+9. **Database Storage**: Thread-safe concurrent writes to DuckDB with state persistence
+10. **Progress Tracking**: Real-time updates with completion estimates and resume capability
+11. **Graceful Shutdown**: On interrupt, complete current tasks and save progress
 
 ### 2. Search Time Series with Precise Data
 
@@ -283,10 +293,10 @@ Min/Max Length: 45 / 8,765 (analyzed)
 
 ## Real-World Examples
 
-### Example 1: Full Production Indexing with Progress Tracking
+### Example 1: Resumable Production Indexing
 
 ```bash
-# Full parallel indexing of TFC data (109 datasets)
+# Full parallel indexing of TFC data (109 datasets) - resumable!
 ts-indexer index \
   --bucket tfc-modeling-data-eu-west-3 \
   --prefix lotsa_long_format/ \
@@ -294,9 +304,16 @@ ts-indexer index \
   --concurrency 8
 
 # Output shows real-time progress:
-# [00:02:15] ████████████████████████████████████████ 45/109 datasets Completed: alibaba_cluster_trace_2018
-# [00:04:32] ████████████████████████████████████████ 89/109 datasets Completed: azure_vm_traces_2017  
-# [00:06:45] ████████████████████████████████████████ 109/109 datasets Completed! 109 datasets, 0 errors
+# [00:02:15] ████████████████████████████████████████ 45/109 datasets ✅ Completed: alibaba_cluster_trace_2018
+# [00:04:32] ████████████████████████████████████████ 89/109 datasets ✅ Completed: azure_vm_traces_2017  
+
+# Press Ctrl+C to interrupt gracefully:
+# 🛑 Received SIGINT (Ctrl+C), initiating graceful shutdown...
+# 🛑 Gracefully shut down! 89 datasets completed, 0 errors. Progress saved - resume with same command.
+
+# Resume by running the same command:
+# Resuming indexing: 89 datasets already completed, 20 remaining to process
+# [00:06:45] ████████████████████████████████████████ 109/109 datasets ✅ Completed! 20 datasets, 0 errors
 ```
 
 ### Example 2: System-Optimized Indexing  
@@ -458,30 +475,69 @@ ts_id:
 
 ## Troubleshooting
 
-### Parallel Processing Issues
+### Resumable Processing Issues
 
 1. **High memory usage:**
    ```
    warning: worker using 2GB+ memory
    ```
-   Solution: Reduce `--concurrency` to 2-4 workers
+   Solution: Reduce `--concurrency` to 2-4 workers, restart to resume
 
 2. **S3 throttling:**
    ```
    error: SlowDown: Please reduce your request rate
    ```
-   Solution: Reduce `--concurrency` to 4-6 workers
+   Solution: Reduce `--concurrency` to 4-6 workers, use Ctrl+C to shutdown gracefully
 
 3. **Database lock conflicts:**
    ```
    error: Could not set lock on file
    ```
-   Solution: Ensure no other ts-indexer processes are running
+   Solution: Ensure no other ts-indexer processes are running, check for stale locks
 
-4. **Progress bar not updating:**
+4. **Resume not working:**
+   ```
+   info: All datasets are already indexed! Use --force to reindex.
+   ```
+   This is normal - all datasets are completed. Use `--force` to reindex.
+
+5. **Graceful shutdown not working:**
+   - Ensure signal handling is working (Unix: SIGINT/SIGTERM, Windows: Ctrl+C)
+   - Check system permissions for signal handling
+   - Use `--verbose` to see shutdown messages
+
+6. **Progress bar not updating:**
    - Enable verbose mode: `--verbose`
    - Check network connectivity to S3
    - Verify AWS credentials have read access
+
+### Dataset Discovery Issues
+
+7. **Only discovering a few datasets (e.g., 12 instead of 109):**
+   ```
+   info: Found 12 metadata files, but expected more
+   ```
+   This was caused by case sensitivity issues - **FIXED**. The indexer now:
+   - Lists ALL metadata files during discovery phase
+   - Applies `--max-files` limit AFTER discovery, not during
+   - Automatically handles case differences between metadata filenames (lowercase) and S3 directories (uppercase)
+   - Example: `alibaba_cluster_trace_2018_metadata.yaml` → `ALIBABA_CLUSTER_TRACE_2018/` directory
+
+8. **Case sensitivity mismatch:**
+   ```
+   debug: ❌ No directory found for dataset: dataset_name
+   ```
+   **FIXED**: Added `find_case_sensitive_dataset_dir()` method that:
+   - Extracts directory names from S3 file paths (not objects)
+   - Performs case-insensitive matching
+   - Returns the correct case-sensitive directory name for data access
+
+9. **Stats showing 0 series/records:**
+   ```
+   Total Series: 0
+   Total Records: 0
+   ```
+   **FIXED**: Updated `get_stats()` query to use computed statistics from `datasets` table instead of empty intermediate tables
 
 ### Statistics Computation Issues
 
@@ -505,18 +561,24 @@ ts_id:
 
 ### Debug Mode
 
-Enable verbose logging for troubleshooting parallel processing:
+Enable verbose logging for troubleshooting resumable processing:
 
 ```bash
 ts-indexer --verbose index \
   --bucket your-bucket \
   --prefix your-prefix/ \
   --concurrency 4
+
+# Look for these debug messages:
+# info: "Starting resumable parallel indexing process with 4 workers..."
+# info: "Resuming indexing: 50 datasets already completed, 59 remaining to process"
+# info: "🛑 Received SIGINT (Ctrl+C), initiating graceful shutdown..."
+# warn: "🛑 Shutdown signal received, stopping further processing..."
 ```
 
 ## Roadmap
 
-### Phase 1: Parallel Processing & Precise Statistics ✅
+### Phase 1: Resumable Parallel Processing & Precise Statistics ✅
 - [x] Multi-worker parallel indexing (8x speed improvement)
 - [x] Real-time progress tracking with visual progress bars
 - [x] Thread-safe database operations with Arc<Mutex<Connection>>  
@@ -524,13 +586,22 @@ ts-indexer --verbose index \
 - [x] Series length statistics (min/max/average) computation
 - [x] Metadata-driven series ID column extraction
 - [x] Configurable concurrency with `--concurrency` parameter
+- [x] **Resumable indexing** with automatic progress preservation
+- [x] **Graceful shutdown** handling (SIGINT/SIGTERM)
+- [x] **Cross-platform signal handling** (Unix + Windows)
+- [x] **Database state tracking** (pending/in_progress/completed/failed)
+- [x] **Evidence-based storage recommendations** from real S3 data analysis
+- [x] **Case-insensitive dataset discovery** - discovers ALL available datasets
+- [x] **Fixed max-files logic** - applies limit after discovery, not during
+- [x] **Corrected stats computation** - uses computed dataset statistics
+- [x] **Filtered AWS SDK logging** - reduced verbose output for better UX
 
 ### Phase 2: Enhanced Performance & Features
 - [ ] Adaptive concurrency based on system resources
-- [ ] Resume interrupted indexing with checkpoint/restart
-- [ ] Incremental indexing for updated datasets
+- [ ] Incremental indexing for updated datasets  
 - [ ] Memory usage optimization for large datasets
 - [ ] Distributed processing across multiple machines
+- [ ] Smart retry logic for failed datasets
 
 ### Phase 3: Advanced Capabilities  
 - [ ] Web API with Axum framework and parallel request handling
