@@ -15,6 +15,7 @@ aws-sdk-s3 = "1.15"
 
 # CLI
 clap = { version = "4.4", features = ["derive"] }
+libc = "0.2"
 
 # Async runtime
 tokio = { version = "1.35", features = ["full"] }
@@ -37,6 +38,10 @@ thiserror = "1.0"
 
 # Progress and UI
 indicatif = "0.17"
+crossterm = "0.28"
+textplots = "0.8"
+inquire = "0.7"
+ratatui = "0.28"
 
 # Logging
 tracing = "0.1"
@@ -45,3 +50,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Utilities
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.6", features = ["v4", "serde"] }
+
+# System monitoring
+sysinfo = "0.30"
+num_cpus = "1.16"
