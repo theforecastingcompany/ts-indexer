@@ -75,6 +75,22 @@ impl InteractiveFinder {
         Self::with_search_engine(db, search_engine)
     }
     
+    /// Format numbers with US-style thousand separators
+    fn format_number(num: impl std::fmt::Display) -> String {
+        let num_str = num.to_string();
+        let mut result = String::new();
+        let chars: Vec<char> = num_str.chars().collect();
+        
+        for (i, ch) in chars.iter().enumerate() {
+            if i > 0 && (chars.len() - i) % 3 == 0 {
+                result.push(',');
+            }
+            result.push(*ch);
+        }
+        
+        result
+    }
+    
     pub fn with_search_engine(db: Database, search_engine: SearchEngine) -> Self {
         
         Self {
@@ -454,7 +470,7 @@ impl InteractiveFinder {
                 for &category_name in &category_order {
                     if let Some(features) = feature_categories.remove(category_name) {
                         let count = features.len();
-                        self.features_list.push(format!("📋 {}: {} features", category_name, count));
+                        self.features_list.push(format!("📋 {}: {} features", category_name, Self::format_number(count)));
                         
                         categories.push(FeatureCategory {
                             name: category_name.to_string(),
@@ -467,7 +483,7 @@ impl InteractiveFinder {
                 // Add any remaining categories not in the standard order
                 for (category_name, features) in feature_categories {
                     let count = features.len();
-                    self.features_list.push(format!("📋 {}: {} features", category_name, count));
+                    self.features_list.push(format!("📋 {}: {} features", category_name, Self::format_number(count)));
                     
                     categories.push(FeatureCategory {
                         name: category_name,
@@ -557,12 +573,12 @@ impl InteractiveFinder {
         
         let title = if let Some(dataset) = &self.current_dataset {
             if let Some(series) = &self.current_series {
-                format!(" Search > {} > {} ({} {}) ", dataset, series, result_count, level_name.to_lowercase())
+                format!(" Search > {} > {} ({} {}) ", dataset, series, Self::format_number(result_count), level_name.to_lowercase())
             } else {
-                format!(" Search > {} ({} {}) ", dataset, result_count, level_name.to_lowercase())
+                format!(" Search > {} ({} {}) ", dataset, Self::format_number(result_count), level_name.to_lowercase())
             }
         } else {
-            format!(" Search ({} {}) ", result_count, level_name.to_lowercase())
+            format!(" Search ({} {}) ", Self::format_number(result_count), level_name.to_lowercase())
         };
         
         let input = Paragraph::new(self.query.as_str())
@@ -584,8 +600,8 @@ impl InteractiveFinder {
                         let group = self.dataset_groups.get(dataset_name).unwrap();
                         let content = format!("📊 {} ({} matching series, {} records)", 
                             dataset_name,
-                            group.series.len(),
-                            group.total_records
+                            Self::format_number(group.series.len()),
+                            Self::format_number(group.total_records)
                         );
                         let style = if i == self.selected_index {
                             Style::default().bg(Color::Blue).fg(Color::White)
@@ -603,7 +619,7 @@ impl InteractiveFinder {
                     .map(|(i, result)| {
                         let content = format!("📈 {} [{} records]", 
                             result.search_result.series_id,
-                            result.search_result.record_count
+                            Self::format_number(result.search_result.record_count)
                         );
                         let style = if i == self.selected_index {
                             Style::default().bg(Color::Blue).fg(Color::White)
@@ -678,12 +694,12 @@ impl InteractiveFinder {
                         
                         preview_lines.push(Line::from(vec![
                             Span::styled("Series Count: ", Style::default().fg(Color::Cyan)),
-                            Span::raw(group.series.len().to_string()),
+                            Span::raw(Self::format_number(group.series.len())),
                         ]));
                         
                         preview_lines.push(Line::from(vec![
                             Span::styled("Total Records: ", Style::default().fg(Color::Cyan)),
-                            Span::raw(group.total_records.to_string()),
+                            Span::raw(Self::format_number(group.total_records)),
                         ]));
                         
                         // Show some sample series
@@ -698,12 +714,12 @@ impl InteractiveFinder {
                                     "{}. {} ({} records)",
                                     i + 1,
                                     series.search_result.series_id,
-                                    series.search_result.record_count
+                                    Self::format_number(series.search_result.record_count)
                                 )));
                             }
                             
                             if group.series.len() > 5 {
-                                preview_lines.push(Line::from(format!("... and {} more", group.series.len() - 5)));
+                                preview_lines.push(Line::from(format!("... and {} more", Self::format_number(group.series.len() - 5))));
                             }
                         }
                     }
@@ -739,7 +755,7 @@ impl InteractiveFinder {
                     
                     preview_lines.push(Line::from(vec![
                         Span::styled("Records: ", Style::default().fg(Color::Cyan)),
-                        Span::raw(result.search_result.record_count.to_string()),
+                        Span::raw(Self::format_number(result.search_result.record_count)),
                     ]));
                     
                     preview_lines.push(Line::from(vec![
@@ -800,23 +816,23 @@ impl InteractiveFinder {
                             if category.name == "Targets" {
                                 preview_lines.push(Line::from(vec![
                                     Span::styled("🎯 Targets: ", Style::default().fg(Color::Cyan)),
-                                    Span::raw(format!("{} features", category.count)),
+                                    Span::raw(format!("{} features", Self::format_number(category.count))),
                                 ]));
                             } else {
                                 preview_lines.push(Line::from(vec![
                                     Span::styled("📊 ", Style::default().fg(Color::Cyan)),
-                                    Span::raw(format!("{}: {} features", category.name, category.count)),
+                                    Span::raw(format!("{}: {} features", category.name, Self::format_number(category.count))),
                                 ]));
                             }
                             
                             if numerical_count > 0 || categorical_count > 0 {
                                 preview_lines.push(Line::from(vec![
                                     Span::styled("📈 Numerical Covariates: ", Style::default().fg(Color::Cyan)),
-                                    Span::raw(format!("{} features", numerical_count)),
+                                    Span::raw(format!("{} features", Self::format_number(numerical_count))),
                                 ]));
                                 preview_lines.push(Line::from(vec![
                                     Span::styled("🔤 Categorical Covariates: ", Style::default().fg(Color::Cyan)),
-                                    Span::raw(format!("{} features", categorical_count)),
+                                    Span::raw(format!("{} features", Self::format_number(categorical_count))),
                                 ]));
                             }
                             
@@ -859,7 +875,7 @@ impl InteractiveFinder {
                                 }
                                 
                                 if category.features.len() > 10 {
-                                    preview_lines.push(Line::from(format!("... and {} more", category.features.len() - 10)));
+                                    preview_lines.push(Line::from(format!("... and {} more", Self::format_number(category.features.len() - 10))));
                                 }
                             } else {
                                 // Show individual features for other categories
@@ -885,7 +901,7 @@ impl InteractiveFinder {
                                 }
                                 
                                 if category.features.len() > 20 {
-                                    preview_lines.push(Line::from(format!("... and {} more", category.features.len() - 20)));
+                                    preview_lines.push(Line::from(format!("... and {} more", Self::format_number(category.features.len() - 20))));
                                 }
                             }
                         }
