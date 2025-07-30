@@ -16,9 +16,10 @@ use ratatui::{
     Frame, Terminal,
     symbols,
 };
-use std::{collections::HashMap, fs::OpenOptions};
+use std::{collections::{HashMap, HashSet}, fs::OpenOptions, io::Write, time::Duration};
 use tracing::{debug, info};
 use chrono;
+use tokio::sync::mpsc;
 
 use crate::db::{Database, FeatureMetadata, FeatureAttribute};
 use crate::search::{EnhancedSearchResult, SearchEngine};
@@ -28,6 +29,29 @@ enum ViewLevel {
     Dataset,
     Series,
     Features,
+}
+
+#[derive(Debug, Clone)]
+enum FeatureDataState {
+    NeedsFetch,
+    Loading,
+    Ready(Vec<(f64, f64)>),
+    Error(String),
+}
+
+/// Communication between async data fetching tasks and the main UI thread
+#[derive(Debug)]
+enum FeatureDataResult {
+    Success {
+        feature_name: String,
+        series_id: String,
+        data: Vec<(f64, f64)>,
+    },
+    Error {
+        feature_name: String,
+        series_id: String,
+        error: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -71,6 +95,18 @@ pub struct InteractiveFinder {
     features_list: Vec<String>,
     current_features: Option<SeriesFeatures>,
     current_features_data: Option<Vec<FeatureMetadata>>,
+    
+    // Feature data caching and loading state
+    feature_data_cache: HashMap<String, Vec<(f64, f64)>>,
+    loading_features: HashSet<String>,
+    data_fetch_errors: HashMap<String, String>,
+    
+    // Loading animation state
+    loading_spinner_frame: usize,
+    
+    // Async communication
+    data_receiver: mpsc::UnboundedReceiver<FeatureDataResult>,
+    data_sender: mpsc::UnboundedSender<FeatureDataResult>,
 }
 
 impl InteractiveFinder {
@@ -97,6 +133,7 @@ impl InteractiveFinder {
     }
     
     pub fn with_search_engine(db: Database, search_engine: SearchEngine) -> Self {
+        let (data_sender, data_receiver) = mpsc::unbounded_channel();
         
         Self {
             search_engine,
@@ -118,6 +155,18 @@ impl InteractiveFinder {
             features_list: Vec::new(),
             current_features: None,
             current_features_data: None,
+            
+            // Initialize data caching
+            feature_data_cache: HashMap::new(),
+            loading_features: HashSet::new(),
+            data_fetch_errors: HashMap::new(),
+            
+            // Initialize loading animation
+            loading_spinner_frame: 0,
+            
+            // Initialize async communication
+            data_receiver,
+            data_sender,
         }
     }
     
@@ -132,8 +181,91 @@ impl InteractiveFinder {
             .collect()
     }
     
+    /// Generate cache key for feature data
+    fn get_cache_key(&self, feature_name: &str) -> String {
+        if let Some(series_id) = &self.current_series {
+            format!("{}::{}", series_id, feature_name)
+        } else {
+            feature_name.to_string()
+        }
+    }
+    
+    /// Get current loading spinner character and advance frame
+    fn get_loading_spinner(&mut self) -> char {
+        let spinners = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+        let spinner = spinners[self.loading_spinner_frame % spinners.len()];
+        self.loading_spinner_frame = (self.loading_spinner_frame + 1) % spinners.len();
+        spinner
+    }
+    
+    /// Fetch real time series data for a specific feature
+    async fn fetch_feature_data(&self, series_id: &str, feature_name: &str) -> Result<Vec<(f64, f64)>> {
+        // Use the existing database method to get time series data with S3 fallback
+        let time_series_points = self.db.get_time_series_data_with_fallback(
+            series_id, 
+            feature_name, 
+            Some(100) // Limit to 100 points for performance
+        ).await?;
+        
+        // Convert TimeSeriesPoint to (f64, f64) for chart rendering
+        // Filter out invalid values (NaN, infinite) to prevent chart rendering issues
+        eprintln!("[DEBUG {}] Raw data points for {}: {} total points", 
+                  chrono::Utc::now().format("%H:%M:%S"), feature_name, time_series_points.len());
+        
+        if !time_series_points.is_empty() {
+            let first_few: Vec<String> = time_series_points.iter().take(3)
+                .map(|p| format!("{}:{:.2}", p.timestamp.format("%H:%M:%S"), p.value))
+                .collect();
+            eprintln!("[DEBUG {}] First 3 points: [{}]", 
+                      chrono::Utc::now().format("%H:%M:%S"), first_few.join(", "));
+        }
+        
+        let chart_data: Vec<(f64, f64)> = time_series_points
+            .iter()
+            .enumerate()
+            .filter_map(|(i, point)| {
+                // Only include finite values
+                if point.value.is_finite() {
+                    Some((i as f64, point.value))
+                } else {
+                    eprintln!("[DEBUG {}] Filtered out non-finite value: {}", 
+                              chrono::Utc::now().format("%H:%M:%S"), point.value);
+                    None
+                }
+            })
+            .collect();
+            
+        eprintln!("[DEBUG {}] Chart data after filtering: {} points", 
+                  chrono::Utc::now().format("%H:%M:%S"), chart_data.len());
+        
+        Ok(chart_data)
+    }
+    
+    /// Get feature data with caching - handles both loading states and cached data
+    fn get_feature_data(&mut self, feature_name: &str) -> FeatureDataState {
+        let cache_key = self.get_cache_key(feature_name);
+        
+        // Check if data is already cached
+        if let Some(data) = self.feature_data_cache.get(&cache_key) {
+            return FeatureDataState::Ready(data.clone());
+        }
+        
+        // Check if data is currently being loaded
+        if self.loading_features.contains(&cache_key) {
+            return FeatureDataState::Loading;
+        }
+        
+        // Check if there was an error loading this data
+        if let Some(error) = self.data_fetch_errors.get(&cache_key) {
+            return FeatureDataState::Error(error.clone());
+        }
+        
+        // Data needs to be fetched
+        FeatureDataState::NeedsFetch
+    }
+    
     /// Render a time series chart using Ratatui's Chart widget or static value display
-    fn render_feature_chart(&self, f: &mut Frame, area: Rect, feature_name: &str, feature: &FeatureMetadata) {
+    fn render_feature_chart(&mut self, f: &mut Frame, area: Rect, feature_name: &str, feature: &FeatureMetadata) {
         // Handle static covariates differently - show actual value instead of time series
         if feature.attribute == FeatureAttribute::StaticCovariates {
             self.render_static_value_display(f, area, feature_name, feature);
@@ -143,21 +275,50 @@ impl InteractiveFinder {
     }
     
     /// Render static value display for static covariates
-    fn render_static_value_display(&self, f: &mut Frame, area: Rect, feature_name: &str, feature: &FeatureMetadata) {
-        // Generate placeholder static value based on feature type
-        let placeholder_value = match feature.modality {
-            crate::db::Modality::Numerical => {
-                // Generate a random-looking but consistent number based on feature name
-                let hash = feature_name.bytes().fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
-                let value = (hash % 10000) as f64 / 100.0; // Creates values like 42.15, 73.28, etc.
-                format!("{:.2}", value)
+    fn render_static_value_display(&mut self, f: &mut Frame, area: Rect, feature_name: &str, feature: &FeatureMetadata) {
+        let cache_key = if let Some(series_id) = &self.current_series {
+            format!("{}::{}", series_id, feature_name)
+        } else {
+            feature_name.to_string()
+        };
+        
+        // If loading, show animated spinner using the same loading chart as time series
+        if self.loading_features.contains(&cache_key) {
+            self.render_loading_chart(f, area, feature_name);
+            return;
+        }
+        
+        // If error, show error chart
+        if let Some(error) = self.data_fetch_errors.get(&cache_key) {
+            self.render_error_chart(f, area, feature_name, error);
+            return;
+        }
+        
+        // Check if we have cached static value data
+        let display_value = if let Some(cached_data) = self.feature_data_cache.get(&cache_key) {
+            // For static covariates, take the first value (they should all be the same)
+            if let Some((_, value)) = cached_data.first() {
+                match feature.modality {
+                    crate::db::Modality::Numerical => format!("{:.2}", value),
+                    crate::db::Modality::Categorical => {
+                        // For categorical, convert the numerical value back to category
+                        let category_index = *value as usize;
+                        let categories = ["Category A", "Category B", "Category C", "High", "Medium", "Low", "Type 1", "Type 2"];
+                        categories.get(category_index).unwrap_or(&"Unknown").to_string()
+                    }
+                }
+            } else {
+                "No data available".to_string()
             }
-            crate::db::Modality::Categorical => {
-                // Generate placeholder categorical values
-                let categories = ["Category A", "Category B", "Category C", "High", "Medium", "Low", "Type 1", "Type 2"];
-                let hash = feature_name.bytes().fold(0usize, |acc, b| acc.wrapping_mul(31).wrapping_add(b as usize));
-                categories[hash % categories.len()].to_string()
-            }
+        } else {
+            "Press Enter to load value".to_string()
+        };
+        
+        // Determine colors and status based on data state
+        let (title_color, value_color, status_text) = if self.feature_data_cache.contains_key(&cache_key) {
+            (Color::Green, Color::Cyan, "Real value from S3")
+        } else {
+            (Color::Blue, Color::Blue, "Press Enter to load")
         };
         
         // Create content lines for the static value display
@@ -166,13 +327,13 @@ impl InteractiveFinder {
             Line::from(""),
             Line::from(Span::styled(
                 "📐 STATIC VALUE",
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                Style::default().fg(title_color).add_modifier(Modifier::BOLD)
             )),
             Line::from(""),
             Line::from(""),
             Line::from(Span::styled(
-                format!("Current Value: {}", placeholder_value),
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                format!("Current Value: {}", display_value),
+                Style::default().fg(value_color).add_modifier(Modifier::BOLD)
             )),
             Line::from(""),
             Line::from(Span::styled(
@@ -182,7 +343,7 @@ impl InteractiveFinder {
             Line::from(""),
             Line::from(""),
             Line::from(Span::styled(
-                "Note: Real value from S3 data will replace placeholder",
+                status_text,
                 Style::default().fg(Color::DarkGray)
             )),
         ];
@@ -201,18 +362,54 @@ impl InteractiveFinder {
     }
     
     /// Render time series chart for dynamic features
-    fn render_time_series_chart(&self, f: &mut Frame, area: Rect, feature_name: &str) {
-        // Generate sample data for the placeholder
-        let data = Self::generate_sample_data();
+    fn render_time_series_chart(&mut self, f: &mut Frame, area: Rect, feature_name: &str) {
+        let cache_key = if let Some(series_id) = &self.current_series {
+            format!("{}::{}", series_id, feature_name)
+        } else {
+            feature_name.to_string()
+        };
         
-        // Find data bounds for axis scaling
-        let x_min = data.iter().map(|(x, _)| *x).fold(f64::INFINITY, f64::min);
-        let x_max = data.iter().map(|(x, _)| *x).fold(f64::NEG_INFINITY, f64::max);
-        let y_min = data.iter().map(|(_, y)| *y).fold(f64::INFINITY, f64::min);
-        let y_max = data.iter().map(|(_, y)| *y).fold(f64::NEG_INFINITY, f64::max);
+        // Check if we have cached data
+        let data = if let Some(cached_data) = self.feature_data_cache.get(&cache_key) {
+            cached_data.clone()
+        } else if self.loading_features.contains(&cache_key) {
+            // Show loading state
+            self.render_loading_chart(f, area, feature_name);
+            return;
+        } else if let Some(error) = self.data_fetch_errors.get(&cache_key) {
+            // Show error state
+            self.render_error_chart(f, area, feature_name, error);
+            return;
+        } else {
+            // No data available yet, show placeholder and note that data needs fetching
+            // We'll trigger data fetching from the main event loop
+            self.render_needs_fetch_chart(f, area, feature_name);
+            return;
+        };
         
-        // Add some padding to the bounds
-        let y_padding = (y_max - y_min) * 0.1;
+        // Handle empty data case
+        if data.is_empty() {
+            self.render_error_chart(f, area, feature_name, "No valid data points available");
+            return;
+        }
+        
+        // Find data bounds for axis scaling - ensure finite values
+        let x_values: Vec<f64> = data.iter().map(|(x, _)| *x).filter(|x| x.is_finite()).collect();
+        let y_values: Vec<f64> = data.iter().map(|(_, y)| *y).filter(|y| y.is_finite()).collect();
+        
+        if x_values.is_empty() || y_values.is_empty() {
+            self.render_error_chart(f, area, feature_name, "No finite data values available");
+            return;
+        }
+        
+        let x_min = x_values.iter().cloned().fold(f64::INFINITY, f64::min);
+        let x_max = x_values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let y_min = y_values.iter().cloned().fold(f64::INFINITY, f64::min);
+        let y_max = y_values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        
+        // Add some padding to the bounds (handle case where y_min == y_max)
+        let y_range = y_max - y_min;
+        let y_padding = if y_range > 0.0 { y_range * 0.1 } else { 1.0 }; // Default padding for constant values
         let y_min = y_min - y_padding;
         let y_max = y_max + y_padding;
         
@@ -220,7 +417,7 @@ impl InteractiveFinder {
         let datasets = vec![
             Dataset::default()
                 .name(feature_name)
-                .marker(symbols::Marker::Dot)
+                .marker(symbols::Marker::Braille)
                 .style(Style::default().fg(Color::Cyan))
                 .data(&data)
         ];
@@ -267,6 +464,109 @@ impl InteractiveFinder {
             );
         
         f.render_widget(chart, area);
+    }
+    
+    /// Render loading state for chart
+    fn render_loading_chart(&mut self, f: &mut Frame, area: Rect, feature_name: &str) {
+        let spinner = self.get_loading_spinner();
+        let loading_text = vec![
+            Line::from(""),
+            Line::from(""),
+            Line::from(Span::styled(
+                format!("{} LOADING DATA...", spinner),
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Fetching time series from S3",
+                Style::default().fg(Color::Cyan)
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Please wait...",
+                Style::default().fg(Color::Gray)
+            )),
+        ];
+        
+        let loading_display = Paragraph::new(Text::from(loading_text))
+            .block(Block::default()
+                .borders(Borders::ALL)
+                .title(Span::styled(
+                    format!(" {} - Loading ", feature_name),
+                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                ))
+            )
+            .alignment(Alignment::Center);
+        
+        f.render_widget(loading_display, area);
+    }
+    
+    /// Render error state for chart
+    fn render_error_chart(&self, f: &mut Frame, area: Rect, feature_name: &str, error: &str) {
+        let error_text = vec![
+            Line::from(""),
+            Line::from(""),
+            Line::from(Span::styled(
+                "❌ DATA FETCH ERROR",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                error,
+                Style::default().fg(Color::Red)
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Press 'r' to retry fetching data",
+                Style::default().fg(Color::Gray)
+            )),
+        ];
+        
+        let error_display = Paragraph::new(Text::from(error_text))
+            .block(Block::default()
+                .borders(Borders::ALL)
+                .title(Span::styled(
+                    format!(" {} - Error ", feature_name),
+                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+                ))
+            )
+            .alignment(Alignment::Center);
+        
+        f.render_widget(error_display, area);
+    }
+    
+    /// Render "needs fetch" state for chart
+    fn render_needs_fetch_chart(&self, f: &mut Frame, area: Rect, feature_name: &str) {
+        let fetch_text = vec![
+            Line::from(""),
+            Line::from(""),
+            Line::from(Span::styled(
+                "📊 REAL DATA AVAILABLE",
+                Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD)
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Press 'Enter' to load time series from S3",
+                Style::default().fg(Color::Cyan)
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "This will fetch actual parquet data",
+                Style::default().fg(Color::Gray)
+            )),
+        ];
+        
+        let fetch_display = Paragraph::new(Text::from(fetch_text))
+            .block(Block::default()
+                .borders(Borders::ALL)
+                .title(Span::styled(
+                    format!(" {} - Press Enter to Load ", feature_name),
+                    Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD)
+                ))
+            )
+            .alignment(Alignment::Center);
+        
+        f.render_widget(fetch_display, area);
     }
     
     /// Check if an index in the features list is selectable (not a header or spacer)
@@ -403,8 +703,13 @@ impl InteractiveFinder {
             
             terminal.draw(|f| self.ui(f))?;
             
-            // Use non-blocking event polling with a small timeout
-            if crossterm::event::poll(std::time::Duration::from_millis(50))? {
+            // Process any completed async data fetches
+            while let Ok(message) = self.data_receiver.try_recv() {
+                self.process_data_result(message);
+            }
+            
+            // Use non-blocking event polling with shorter timeout for smoother spinner animation
+            if crossterm::event::poll(std::time::Duration::from_millis(100))? {
                 if let Event::Key(key) = event::read()? {
                     if key.kind == KeyEventKind::Press {
                         match key.code {
@@ -434,8 +739,89 @@ impl InteractiveFinder {
                                     }
                                 }
                                 ViewLevel::Features => {
-                                    // Do nothing - just stay at features level
-                                    eprintln!("[DEBUG {}] 🔧 Enter key pressed at Features level - ignoring", chrono::Utc::now().format("%H:%M:%S"));
+                                    eprintln!("[DEBUG {}] 🔧 Enter key pressed at Features level - checking for data to fetch", chrono::Utc::now().format("%H:%M:%S"));
+                                    
+                                    // Check if current feature needs data fetching
+                                    if let Some(feature_name) = self.current_feature_needs_fetch() {
+                                        eprintln!("[DEBUG {}] 📊 Starting data fetch for feature: {}", chrono::Utc::now().format("%H:%M:%S"), feature_name);
+                                        
+                                        if self.start_feature_data_fetch(&feature_name) {
+                                            // Start async data fetching
+                                            if let (Some(current_series), Some(current_dataset)) = 
+                                                (&self.current_series, &self.current_dataset) {
+                                                
+                                                eprintln!("[DEBUG {}] 🚀 Fetching data for series: {}, feature: {}", 
+                                                    chrono::Utc::now().format("%H:%M:%S"), current_series, feature_name);
+                                                
+                                                let series_id = current_series.clone();
+                                                let feature_name_clone = feature_name.clone();
+                                                let db = self.db.clone();
+                                                let sender = self.data_sender.clone();
+                                                
+                                                // Spawn async task for data fetching with timeout
+                                                tokio::spawn(async move {
+                                                    let timeout_duration = Duration::from_secs(30);
+                                                    let result = tokio::time::timeout(
+                                                        timeout_duration,
+                                                        db.get_time_series_data_with_fallback(&series_id, &feature_name_clone, Some(100))
+                                                    ).await;
+                                                    
+                                                    let message = match result {
+                                                        Ok(Ok(time_series_points)) => {
+                                                            let chart_data: Vec<(f64, f64)> = time_series_points
+                                                                .iter()
+                                                                .enumerate()
+                                                                .filter_map(|(i, point)| {
+                                                                    if point.value.is_finite() {
+                                                                        Some((i as f64, point.value))
+                                                                    } else {
+                                                                        None
+                                                                    }
+                                                                })
+                                                                .collect();
+                                                            
+                                                            eprintln!("[DEBUG {}] ✅ Successfully fetched {} data points for feature: {}", 
+                                                                chrono::Utc::now().format("%H:%M:%S"), chart_data.len(), feature_name_clone);
+                                                            
+                                                            FeatureDataResult::Success {
+                                                                feature_name: feature_name_clone.clone(),
+                                                                series_id: series_id.clone(),
+                                                                data: chart_data,
+                                                            }
+                                                        }
+                                                        Ok(Err(e)) => {
+                                                            eprintln!("[DEBUG {}] ❌ Failed to fetch data for feature {}: {}", 
+                                                                chrono::Utc::now().format("%H:%M:%S"), feature_name_clone, e);
+                                                            
+                                                            FeatureDataResult::Error {
+                                                                feature_name: feature_name_clone.clone(),
+                                                                series_id: series_id.clone(),
+                                                                error: e.to_string(),
+                                                            }
+                                                        }
+                                                        Err(_) => {
+                                                            eprintln!("[DEBUG {}] ⏰ Timeout fetching data for feature: {}", 
+                                                                chrono::Utc::now().format("%H:%M:%S"), feature_name_clone);
+                                                            
+                                                            FeatureDataResult::Error {
+                                                                feature_name: feature_name_clone.clone(),
+                                                                series_id: series_id.clone(),
+                                                                error: "Request timed out after 30 seconds".to_string(),
+                                                            }
+                                                        }
+                                                    };
+                                                    
+                                                    // Send result back to main thread
+                                                    if let Err(e) = sender.send(message) {
+                                                        eprintln!("[DEBUG {}] ❌ Failed to send result back to UI: {}", 
+                                                            chrono::Utc::now().format("%H:%M:%S"), e);
+                                                    }
+                                                });
+                                            }
+                                        }
+                                    } else {
+                                        eprintln!("[DEBUG {}] ℹ️ No data fetch needed for current feature", chrono::Utc::now().format("%H:%M:%S"));
+                                    }
                                 }
                             }
                         }
@@ -964,7 +1350,7 @@ impl InteractiveFinder {
     // Removed format_result_line method to fix borrowing issues
     // Formatting is now done inline in the ui method
     
-    fn render_preview(&self, f: &mut Frame, area: Rect) {
+    fn render_preview(&mut self, f: &mut Frame, area: Rect) {
         let mut preview_lines = Vec::new();
         
         match self.current_level {
@@ -1164,29 +1550,40 @@ impl InteractiveFinder {
         
         // Handle Features view with chart layout separately
         if self.current_level == ViewLevel::Features && self.current_features_data.is_some() {
-            if let Some(features_data) = &self.current_features_data {
+            // Extract the selected feature data without borrowing self
+            let selected_feature_data = if let Some(features_data) = &self.current_features_data {
                 if let Some(selected_feature) = features_data.get(self.selected_index) {
                     if !selected_feature.name.starts_with("HEADER:") && selected_feature.name != "SPACER" {
-                        // Split the preview area: top for text, bottom for chart
-                        let preview_chunks = Layout::default()
-                            .direction(Direction::Vertical)
-                            .constraints([
-                                Constraint::Min(6),      // Text area minimum (reduced)
-                                Constraint::Length(16),  // Chart area bigger height
-                            ])
-                            .split(area);
-                        
-                        // Render text content
-                        let preview = Paragraph::new(Text::from(preview_lines))
-                            .block(Block::default().borders(Borders::ALL).title(" Feature Details "))
-                            .wrap(Wrap { trim: true });
-                        f.render_widget(preview, preview_chunks[0]);
-                        
-                        // Render chart or static value display
-                        self.render_feature_chart(f, preview_chunks[1], &selected_feature.name, selected_feature);
-                        return;
+                        Some((selected_feature.name.clone(), selected_feature.clone()))
+                    } else {
+                        None
                     }
+                } else {
+                    None
                 }
+            } else {
+                None
+            };
+            
+            if let Some((feature_name, selected_feature)) = selected_feature_data {
+                // Split the preview area: top for text, bottom for chart
+                let preview_chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Min(6),      // Text area minimum (reduced)
+                        Constraint::Length(16),  // Chart area bigger height
+                    ])
+                    .split(area);
+                
+                // Render text content
+                let preview = Paragraph::new(Text::from(preview_lines))
+                    .block(Block::default().borders(Borders::ALL).title(" Feature Details "))
+                    .wrap(Wrap { trim: true });
+                f.render_widget(preview, preview_chunks[0]);
+                
+                // Render chart or static value display
+                self.render_feature_chart(f, preview_chunks[1], &feature_name, &selected_feature);
+                return;
             }
         }
         
@@ -1196,5 +1593,117 @@ impl InteractiveFinder {
             .wrap(Wrap { trim: true });
         
         f.render_widget(preview, area);
+    }
+    
+    /// Start fetching data for the currently selected feature (non-blocking)
+    pub fn start_feature_data_fetch(&mut self, feature_name: &str) -> bool {
+        if let Some(series_id) = &self.current_series {
+            let cache_key = format!("{}::{}", series_id, feature_name);
+            
+            // Don't start if already loading or cached
+            if self.loading_features.contains(&cache_key) || 
+               self.feature_data_cache.contains_key(&cache_key) {
+                return false;
+            }
+            
+            // Mark as loading
+            self.loading_features.insert(cache_key.clone());
+            
+            // Clear any previous error
+            self.data_fetch_errors.remove(&cache_key);
+            
+            return true;
+        }
+        false
+    }
+    
+    /// Complete data fetch operation (to be called after async fetch completes)
+    pub fn complete_feature_data_fetch(&mut self, feature_name: &str, result: Result<Vec<(f64, f64)>>) {
+        if let Some(series_id) = &self.current_series {
+            let cache_key = format!("{}::{}", series_id, feature_name);
+            
+            // Remove from loading set
+            self.loading_features.remove(&cache_key);
+            
+            match result {
+                Ok(data) => {
+                    // Cache the successful result
+                    self.feature_data_cache.insert(cache_key.clone(), data);
+                    self.data_fetch_errors.remove(&cache_key);
+                }
+                Err(error) => {
+                    // Store the error
+                    self.data_fetch_errors.insert(cache_key, error.to_string());
+                }
+            }
+        }
+    }
+    
+    /// Process data result from async channel
+    fn process_data_result(&mut self, result: FeatureDataResult) {
+        match result {
+            FeatureDataResult::Success { feature_name, series_id, data } => {
+                let cache_key = format!("{}::{}", series_id, feature_name);
+                
+                eprintln!("[DEBUG {}] 📬 Received successful data for feature: {} ({} points)", 
+                    chrono::Utc::now().format("%H:%M:%S"), feature_name, data.len());
+                
+                // Remove from loading set
+                self.loading_features.remove(&cache_key);
+                
+                // Cache the successful result
+                self.feature_data_cache.insert(cache_key.clone(), data);
+                self.data_fetch_errors.remove(&cache_key);
+            }
+            FeatureDataResult::Error { feature_name, series_id, error } => {
+                let cache_key = format!("{}::{}", series_id, feature_name);
+                
+                eprintln!("[DEBUG {}] 📬 Received error for feature: {} - {}", 
+                    chrono::Utc::now().format("%H:%M:%S"), feature_name, error);
+                
+                // Remove from loading set
+                self.loading_features.remove(&cache_key);
+                
+                // Store the error
+                self.data_fetch_errors.insert(cache_key, error);
+            }
+        }
+    }
+    
+    /// Check if the currently visible feature needs data fetching
+    pub fn current_feature_needs_fetch(&self) -> Option<String> {
+        if self.current_level != ViewLevel::Features {
+            return None;
+        }
+        
+        if let Some(features_data) = &self.current_features_data {
+            if let Some(selected_feature) = features_data.get(self.selected_index) {
+                if !selected_feature.name.starts_with("HEADER:") && selected_feature.name != "SPACER" {
+                    let cache_key = self.get_cache_key(&selected_feature.name);
+                    
+                    // Check if needs fetching (applies to both dynamic and static features)
+                    if !self.feature_data_cache.contains_key(&cache_key) &&
+                       !self.loading_features.contains(&cache_key) &&
+                       !self.data_fetch_errors.contains_key(&cache_key) {
+                        return Some(selected_feature.name.clone());
+                    }
+                }
+            }
+        }
+        
+        None
+    }
+    
+    /// Retry fetching data for a feature that had an error
+    pub fn retry_feature_fetch(&mut self, feature_name: &str) -> bool {
+        if let Some(series_id) = &self.current_series {
+            let cache_key = format!("{}::{}", series_id, feature_name);
+            
+            // Clear error and try again
+            self.data_fetch_errors.remove(&cache_key);
+            self.start_feature_data_fetch(feature_name)
+        } else {
+            false
+        }
     }
 }

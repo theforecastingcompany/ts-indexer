@@ -471,7 +471,7 @@ impl Database {
     /// Get dataset info (total_series, total_records) by dataset_id
     pub fn get_dataset_info(&self, dataset_id: &str) -> Result<(i64, i64)> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT total_series, total_records FROM datasets WHERE dataset_id = ?")?;
+        let mut stmt = conn.prepare("SELECT total_series, total_records FROM datasets WHERE lower(trim(dataset_id)) = lower(trim(?))")?;
         
         let result = stmt.query_row(duckdb::params![dataset_id], |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
@@ -717,7 +717,7 @@ impl Database {
     /// Check if dataset exists and get its status
     pub fn get_dataset_status(&self, dataset_id: &str) -> Result<Option<IndexingStatus>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT indexing_status FROM datasets WHERE dataset_id = ?")?;
+        let mut stmt = conn.prepare("SELECT indexing_status FROM datasets WHERE lower(trim(dataset_id)) = lower(trim(?))")?;
         
         match stmt.query_row([dataset_id], |row| {
             Ok(IndexingStatus::from(row.get::<_, String>(0)?.as_str()))
@@ -794,6 +794,7 @@ impl Database {
 
     /// Get a dataset by ID with full metadata
     pub fn get_dataset_by_id(&self, dataset_id: &str) -> Result<Option<Dataset>> {
+        debug!("get_dataset_by_id called with dataset_id: '{}'", dataset_id);
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(r#"
             SELECT dataset_id, name, description, source_bucket, source_prefix,
@@ -803,7 +804,7 @@ impl Database {
                    min_series_length, max_series_length, indexing_status,
                    indexing_started_at, indexing_completed_at, indexing_error,
                    metadata_file_path, data_file_count, created_at, updated_at
-            FROM datasets WHERE dataset_id = ?
+            FROM datasets WHERE lower(trim(dataset_id)) = lower(trim(?))
         "#)?;
 
         let mut rows = stmt.query_map([dataset_id], |row| {
@@ -840,9 +841,19 @@ impl Database {
         })?;
 
         match rows.next() {
-            Some(Ok(dataset)) => Ok(Some(dataset)),
-            Some(Err(e)) => Err(e.into()),
-            None => Ok(None)
+            Some(Ok(dataset)) => {
+                debug!("get_dataset_by_id found dataset: {} with targets: {}", 
+                       dataset.name, dataset.targets.is_some());
+                Ok(Some(dataset))
+            },
+            Some(Err(e)) => {
+                debug!("get_dataset_by_id error: {}", e);
+                Err(e.into())
+            },
+            None => {
+                debug!("get_dataset_by_id found no dataset for id: '{}'", dataset_id);
+                Ok(None)
+            }
         }
     }
 
@@ -923,39 +934,130 @@ impl Database {
     
     /// Get enhanced column metadata with proper feature abstractions
     pub fn get_enhanced_dataset_column_metadata(&self, dataset_id: &str) -> Result<Option<EnhancedDatasetColumnInfo>> {
-        if let Some(dataset) = self.get_dataset_by_id(dataset_id)? {
+        eprintln!("[DEBUG {}] 🔍 get_enhanced_dataset_column_metadata called for dataset_id: {}", chrono::Utc::now().format("%H:%M:%S"), dataset_id);
+        
+        // Direct query approach to avoid connection issues
+        let conn = self.conn.lock().unwrap();
+        
+        // First, let's check if the dataset_id exists at all - use trim to handle whitespace in dataset IDs
+        let check_sql = format!("SELECT COUNT(*) FROM datasets WHERE lower(trim(dataset_id)) = lower(trim('{}'))", dataset_id);
+        let count: i64 = conn.query_row(&check_sql, [], |row| row.get(0))?;
+        eprintln!("[DEBUG {}] 🔍 Dataset exists check: {} datasets found with id '{}'", chrono::Utc::now().format("%H:%M:%S"), count, dataset_id);
+        
+        // Debug: show all datasets to see what's actually in there
+        eprintln!("[DEBUG {}] 🔍 Listing all datasets in database:", chrono::Utc::now().format("%H:%M:%S"));
+        let mut stmt_all = conn.prepare("SELECT dataset_id FROM datasets ORDER BY dataset_id")?;
+        let dataset_iter = stmt_all.query_map([], |row| {
+            let id: String = row.get(0)?;
+            Ok(id)
+        })?;
+        
+        let mut found_target = false;
+        for (i, dataset) in dataset_iter.enumerate() {
+            if let Ok(id) = dataset {
+                if id == dataset_id {
+                    found_target = true;
+                    eprintln!("[DEBUG {}] 🎯 Dataset {}: '{}' <-- TARGET FOUND!", chrono::Utc::now().format("%H:%M:%S"), i + 1, id);
+                } else {
+                    eprintln!("[DEBUG {}] 🔍 Dataset {}: '{}'", chrono::Utc::now().format("%H:%M:%S"), i + 1, id);
+                }
+            }
+        }
+        
+        if found_target {
+            eprintln!("[DEBUG {}] ✅ Target dataset '{}' IS in the database!", chrono::Utc::now().format("%H:%M:%S"), dataset_id);
+        } else {
+            eprintln!("[DEBUG {}] ❌ Target dataset '{}' NOT found in complete list!", chrono::Utc::now().format("%H:%M:%S"), dataset_id);
+        }
+        
+        if count == 0 {
+            eprintln!("[DEBUG {}] ❌ Dataset '{}' not found in database", chrono::Utc::now().format("%H:%M:%S"), dataset_id);
+            
+            // Let's see what dataset IDs actually exist that are similar
+            let mut similar_stmt = conn.prepare("SELECT dataset_id FROM datasets WHERE dataset_id LIKE ? OR dataset_id LIKE ? LIMIT 5")?;
+            let like_pattern1 = format!("%{}%", dataset_id.split('_').next().unwrap_or(dataset_id));
+            let like_pattern2 = format!("%{}%", dataset_id.replace('_', "%"));
+            eprintln!("[DEBUG {}] 🔍 Looking for similar datasets with patterns: '{}', '{}'", chrono::Utc::now().format("%H:%M:%S"), like_pattern1, like_pattern2);
+            
+            let similar_rows = similar_stmt.query_map([&like_pattern1, &like_pattern2], |row| {
+                Ok(row.get::<_, String>(0)?)
+            })?;
+            
+            for (i, row) in similar_rows.enumerate() {
+                if let Ok(similar_id) = row {
+                    eprintln!("[DEBUG {}] 🔍 Similar dataset {}: '{}'", chrono::Utc::now().format("%H:%M:%S"), i+1, similar_id);
+                }
+            }
+            
+            return Ok(None);
+        }
+        
+        // Use direct SQL with trim to handle whitespace in dataset IDs
+        let main_sql = format!(r#"
+            SELECT name, targets, covariates 
+            FROM datasets 
+            WHERE lower(trim(dataset_id)) = lower(trim('{}'))
+        "#, dataset_id);
+        
+        eprintln!("[DEBUG {}] 📊 Executing main query for dataset: {}", chrono::Utc::now().format("%H:%M:%S"), dataset_id);
+        
+        let mut stmt = conn.prepare(&main_sql)?;
+        let mut rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,      // name
+                row.get::<_, Option<String>>(1)?,  // targets
+                row.get::<_, Option<String>>(2)?,  // covariates
+            ))
+        })?;
+        
+        if let Some(Ok((dataset_name, targets_json, covariates_json))) = rows.next() {
+            eprintln!("[DEBUG {}] 📊 Direct query found dataset: {} with targets: {}, covariates: {}", 
+                     chrono::Utc::now().format("%H:%M:%S"), dataset_name, targets_json.is_some(), covariates_json.is_some());
             let mut features = Vec::new();
             
             // Parse features from parsed metadata (NEW APPROACH)
             // Parse targets from metadata
-            if let Some(targets_json) = &dataset.targets {
-                if let Ok(targets) = serde_json::from_str::<Vec<crate::s3::NamedFieldInfo>>(targets_json) {
-                    for target in targets {
-                        let target_feature = FeatureMetadata {
-                            name: target.name,
-                            attribute: FeatureAttribute::Targets,
-                            temporality: Temporality::Dynamic,
-                            modality: if target.field_type == "num" { Modality::Numerical } else { Modality::Categorical },
-                            scope: Scope::Local,
-                            data_type: target.field_type,
-                            description: Some("Target variable from metadata".to_string()),
-                        };
-                        
-                        if target_feature.validate().is_ok() {
-                            features.push(target_feature);
+            if let Some(targets_json) = &targets_json {
+                eprintln!("[DEBUG {}] 🎯 Parsing targets JSON: {}", chrono::Utc::now().format("%H:%M:%S"), targets_json);
+                match serde_json::from_str::<Vec<crate::s3::NamedFieldInfo>>(targets_json) {
+                    Ok(targets) => {
+                        eprintln!("[DEBUG {}] ✅ Successfully parsed {} targets", chrono::Utc::now().format("%H:%M:%S"), targets.len());
+                        for target in targets {
+                            let target_feature = FeatureMetadata {
+                                name: target.name.clone(),
+                                attribute: FeatureAttribute::Targets,
+                                temporality: Temporality::Dynamic,
+                                modality: if target.field_type == "num" { Modality::Numerical } else { Modality::Categorical },
+                                scope: Scope::Local,
+                                data_type: target.field_type.clone(),
+                                description: Some("Target variable from metadata".to_string()),
+                            };
+                            
+                            if target_feature.validate().is_ok() {
+                                eprintln!("[DEBUG {}] ➕ Added target feature: {}", chrono::Utc::now().format("%H:%M:%S"), target.name);
+                                features.push(target_feature);
+                            } else {
+                                eprintln!("[DEBUG {}] ❌ Target feature validation failed for: {}", chrono::Utc::now().format("%H:%M:%S"), target.name);
+                            }
                         }
+                    },
+                    Err(e) => {
+                        eprintln!("[DEBUG {}] 💥 Failed to parse targets JSON: {}", chrono::Utc::now().format("%H:%M:%S"), e);
                     }
                 }
+            } else {
+                eprintln!("[DEBUG {}] ⚠️ No targets JSON found", chrono::Utc::now().format("%H:%M:%S"));
             }
             
-            // Parse covariates from metadata
-            if let Some(covariates_json) = &dataset.covariates {
-                // Debug logging to see what we're trying to deserialize
-                debug!("Deserializing covariates JSON: {}", covariates_json);
+            eprintln!("[DEBUG {}] 📊 Parsed {} target features so far", chrono::Utc::now().format("%H:%M:%S"), features.len());
+            
+            // Parse covariates from metadata  
+            if let Some(covariates_json) = &covariates_json {
+                eprintln!("[DEBUG {}] 📈 Parsing covariates JSON: {}", chrono::Utc::now().format("%H:%M:%S"), covariates_json);
                 match serde_json::from_str::<crate::s3::Covariates>(covariates_json) {
                     Ok(covariates) => {
-                        debug!("Successfully deserialized covariates: hist={}, future={}, static={}", 
-                               covariates.hist.len(), covariates.future.len(), covariates.static_vars.len());
+                        eprintln!("[DEBUG {}] ✅ Successfully parsed covariates: hist={}, future={}, static={}", 
+                                 chrono::Utc::now().format("%H:%M:%S"), covariates.hist.len(), covariates.future.len(), covariates.static_vars.len());
                         
                         // Historical covariates
                         for hist_cov in covariates.hist {
@@ -1024,67 +1126,24 @@ impl Database {
                 description: Some("Time dimension for the series".to_string()),
             });
             
-            // Fallback: if no features from metadata, discover from data columns (legacy behavior)
-            if features.is_empty() {
-                let data_columns = self.discover_data_columns(dataset_id)?;
-                let series_id_columns: Vec<String> = if let Some(series_id_json) = &dataset.series_id_columns {
-                    serde_json::from_str(series_id_json).unwrap_or_default()
-                } else {
-                    vec![]
-                };
-                
-                for column_name in &data_columns {
-                    // Skip timestamp column - it's handled separately
-                    if column_name == "timestamp" {
-                        continue;
-                    }
-                    
-                    // Skip series ID columns
-                    if series_id_columns.contains(column_name) {
-                        continue;
-                    }
-                    
-                    // Create a default target for unknown columns
-                    let default_feature = FeatureMetadata {
-                        name: column_name.clone(),
-                        attribute: FeatureAttribute::Targets,
-                        temporality: Temporality::Dynamic,
-                        modality: Modality::Numerical,
-                        scope: Scope::Local,
-                        data_type: "float".to_string(),
-                        description: Some(format!("Discovered target column: {}", column_name)),
-                    };
-                    
-                    if default_feature.validate().is_ok() {
-                        features.push(default_feature);
-                    }
-                }
-                
-                // Ultimate fallback
-                if features.is_empty() {
-                    let default_feature = FeatureMetadata {
-                        name: "value".to_string(),
-                        attribute: FeatureAttribute::Targets,
-                        temporality: Temporality::Dynamic,
-                        modality: Modality::Numerical,
-                        scope: Scope::Local,
-                        data_type: "float".to_string(),
-                        description: Some("Default time series values".to_string()),
-                    };
-                    
-                    if default_feature.validate().is_ok() {
-                        features.push(default_feature);
-                    }
-                }
-            }
+            eprintln!("[DEBUG {}] 📊 Total features parsed: {}", chrono::Utc::now().format("%H:%M:%S"), features.len());
             
+            eprintln!("[DEBUG {}] ✅ Returning enhanced dataset info with {} features", chrono::Utc::now().format("%H:%M:%S"), features.len());
             return Ok(Some(EnhancedDatasetColumnInfo {
                 dataset_id: dataset_id.to_string(),
-                dataset_name: dataset.name.clone(),
+                dataset_name: dataset_name,
                 features,
-                timestamp_info,
+                timestamp_info: Some(TimestampInfo {
+                    column_name: "timestamp".to_string(),
+                    data_type: "datetime".to_string(),
+                    frequency: Some("hourly".to_string()),
+                    timezone: Some("UTC".to_string()),
+                    description: Some("Time dimension".to_string()),
+                }),
             }));
         }
+        
+        eprintln!("[DEBUG {}] ❌ No dataset found for dataset_id: {}", chrono::Utc::now().format("%H:%M:%S"), dataset_id);
         Ok(None)
     }
 
@@ -1348,11 +1407,14 @@ impl Database {
         })?;
         let series_metadata = &series_with_column_info.series_metadata;
 
-        // 2. Check if file is already cached
-        if self.is_file_cached(&series_metadata.source_file)? {
-            info!("File already cached, querying local database: {}", series_metadata.source_file);
-            return self.get_time_series_data(series_id, column_name, None);
+        // 2. Check if the specific series+column is already cached locally
+        let local_data = self.get_time_series_data(series_id, column_name, None)?;
+        if !local_data.is_empty() {
+            info!("Series data already cached locally: {} rows for {}", local_data.len(), series_id);
+            return Ok(local_data);
         }
+        
+        info!("Series not in local cache, downloading from S3: {}", series_metadata.source_file);
 
         // 3. Get dataset info for S3 details
         let dataset = self.get_dataset_by_id(&series_metadata.dataset_id)?;
@@ -1423,24 +1485,15 @@ impl Database {
             
         info!("Detected data columns: {:?}", data_columns);
         
-        // Parse raw series ID components using metadata types
-        // Get the field type from metadata to determine correct format
-        let item_id_is_string = true; // Based on metadata: item_id type: str, subtype: str
-        
-        let raw_series_parts: Vec<String> = if raw_series_id.contains("::") {
-            // Composite key format: "part1::part2::part3"
-            raw_series_id.split("::").map(|s| s.trim_matches('"').to_string()).collect()
-        } else if item_id_is_string {
-            // item_id is stored as string in parquet, but WITHOUT quotes
-            // Database: beijing_subway_30min:"58" -> raw_series_id: "58" -> parquet: 58 (no quotes!)
-            vec![raw_series_id.trim_matches('"').to_string()] // Strip quotes: "58" -> 58
+        // Parse raw series ID components using dataset schema
+        let raw_series_parts: Vec<String> = if series_id_cols.len() == 1 {
+            // Single component ID: "T1", "58", etc.
+            vec![raw_series_id.trim_matches('"').to_string()]
         } else {
-            // For integer types, try both formats
-            let without_quotes = raw_series_id.trim_matches('"');
-            vec![
-                without_quotes.to_string(), // Remove quotes: "58" -> 58
-                raw_series_id.to_string(), // Keep as-is: "58"
-            ]
+            // Multi-component ID: "bdg-2:bear"|"Bear_education_Lidia"
+            raw_series_id.split('|')
+                .map(|part| part.trim_matches('"').to_string())
+                .collect()
         };
         
         info!("Looking for raw series parts: {:?}", raw_series_parts);
@@ -1448,10 +1501,36 @@ impl Database {
         // Debug: Show a sample of actual data in the parquet file to understand the format
         info!("🔍 DEBUG: Showing first 5 rows of parquet data for debugging:");
         for i in 0..std::cmp::min(5, df.height()) {
-            let item_id = df.column("item_id").unwrap().get(i).unwrap();
-            let timestamp = df.column("timestamp").unwrap().get(i).unwrap();
-            let in_flow = df.column("in_flow").unwrap().get(i).unwrap();
-            info!("  Row {}: item_id={:?}, timestamp={:?}, in_flow={:?}", i, item_id, timestamp, in_flow);
+            let mut row_data = Vec::new();
+            
+            // Safely get available columns
+            if let Ok(timestamp_col) = df.column("timestamp") {
+                if let Ok(val) = timestamp_col.get(i) {
+                    row_data.push(format!("timestamp={:?}", val));
+                }
+            }
+            
+            // Show the first data column that exists
+            for &col_name in &["power", "temperature", "in_flow", "value"] {
+                if let Ok(col) = df.column(col_name) {
+                    if let Ok(val) = col.get(i) {
+                        row_data.push(format!("{}={:?}", col_name, val));
+                        break; // Only show first available data column
+                    }
+                }
+            }
+            
+            // Show series identifier columns
+            for &col_name in &["building_name", "dataset_name", "item_id", "series_id"] {
+                if let Ok(col) = df.column(col_name) {
+                    if let Ok(val) = col.get(i) {
+                        row_data.push(format!("{}={:?}", col_name, val));
+                        break; // Only show first available identifier column
+                    }
+                }
+            }
+            
+            info!("  Row {}: {}", i, row_data.join(", "));
         }
         
         // Build filter expression for the specific series we want
@@ -1481,8 +1560,16 @@ impl Database {
         };
         
         // Debug: Log the filter expression
-        info!("🔍 DEBUG: Filter expression: Filtering {} column for values: {:?}", 
-              &series_id_cols[0], &raw_series_parts);
+        if series_id_cols.len() == 1 {
+            info!("🔍 DEBUG: Single column filter: {} = {:?}", 
+                  &series_id_cols[0], &raw_series_parts[0]);
+        } else {
+            info!("🔍 DEBUG: Multi-column filter: {} columns with {} components", 
+                  series_id_cols.len(), raw_series_parts.len());
+            for (i, (col, part)) in series_id_cols.iter().zip(raw_series_parts.iter()).enumerate() {
+                info!("  Column[{}]: {} = '{}'", i, col, part);
+            }
+        }
         
         // Filter DataFrame using lazy evaluation
         let filtered_df = df.clone().lazy()
@@ -1505,7 +1592,7 @@ impl Database {
             info!("  Looking for: {:?}", &raw_series_parts);
         }
         
-        // Process the filtered data + cache all data for efficiency
+        // Cache only the requested series for performance (full file caching is too expensive for large files)
         let mut time_series_records = Vec::new();
         
         if filtered_df.height() > 0 {
@@ -1521,9 +1608,7 @@ impl Database {
             info!("Extracted {} records for target series", time_series_records.len());
         }
         
-        // For now, skip full file caching to get fast results
-        // TODO: Implement background caching or smaller threshold
-        info!("Skipping full file caching for faster response - caching only target series");
+        info!("Caching requested series only (full file caching disabled for large files)");
 
         info!("Total records to cache: {}", time_series_records.len());
 

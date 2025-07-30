@@ -1,1 +1,18 @@
 /target
+
+# Database files
+*.db
+*.db.wal
+dev-db*
+test_catalog.db
+ts_indexer_progress.json
+
+# Logs
+*.log
+
+# Python cache
+__pycache__/
+*.pyc
+
+# OS files
+.DS_Store
