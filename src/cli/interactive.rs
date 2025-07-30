@@ -6,12 +6,11 @@ use crossterm::{
 };
 use ratatui::{
     backend::{Backend, CrosstermBackend},
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::{
         Block, Borders, List, ListItem, ListState, Paragraph, Wrap,
-        canvas::{Canvas, Line as CanvasLine, Points}, 
         Axis, Chart, Dataset
     },
     Frame, Terminal,
@@ -131,6 +130,143 @@ impl InteractiveFinder {
                 (x, y)
             })
             .collect()
+    }
+    
+    /// Render a time series chart using Ratatui's Chart widget or static value display
+    fn render_feature_chart(&self, f: &mut Frame, area: Rect, feature_name: &str, feature: &FeatureMetadata) {
+        // Handle static covariates differently - show actual value instead of time series
+        if feature.attribute == FeatureAttribute::StaticCovariates {
+            self.render_static_value_display(f, area, feature_name, feature);
+        } else {
+            self.render_time_series_chart(f, area, feature_name);
+        }
+    }
+    
+    /// Render static value display for static covariates
+    fn render_static_value_display(&self, f: &mut Frame, area: Rect, feature_name: &str, feature: &FeatureMetadata) {
+        // Generate placeholder static value based on feature type
+        let placeholder_value = match feature.modality {
+            crate::db::Modality::Numerical => {
+                // Generate a random-looking but consistent number based on feature name
+                let hash = feature_name.bytes().fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
+                let value = (hash % 10000) as f64 / 100.0; // Creates values like 42.15, 73.28, etc.
+                format!("{:.2}", value)
+            }
+            crate::db::Modality::Categorical => {
+                // Generate placeholder categorical values
+                let categories = ["Category A", "Category B", "Category C", "High", "Medium", "Low", "Type 1", "Type 2"];
+                let hash = feature_name.bytes().fold(0usize, |acc, b| acc.wrapping_mul(31).wrapping_add(b as usize));
+                categories[hash % categories.len()].to_string()
+            }
+        };
+        
+        // Create content lines for the static value display
+        let content_lines = vec![
+            Line::from(""),
+            Line::from(""),
+            Line::from(Span::styled(
+                "📐 STATIC VALUE",
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            )),
+            Line::from(""),
+            Line::from(""),
+            Line::from(Span::styled(
+                format!("Current Value: {}", placeholder_value),
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "This value remains constant across all time points",
+                Style::default().fg(Color::Gray)
+            )),
+            Line::from(""),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Note: Real value from S3 data will replace placeholder",
+                Style::default().fg(Color::DarkGray)
+            )),
+        ];
+        
+        let static_display = Paragraph::new(Text::from(content_lines))
+            .block(Block::default()
+                .borders(Borders::ALL)
+                .title(Span::styled(
+                    " Static Covariate Value ",
+                    Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+                ))
+            )
+            .alignment(Alignment::Center);
+        
+        f.render_widget(static_display, area);
+    }
+    
+    /// Render time series chart for dynamic features
+    fn render_time_series_chart(&self, f: &mut Frame, area: Rect, feature_name: &str) {
+        // Generate sample data for the placeholder
+        let data = Self::generate_sample_data();
+        
+        // Find data bounds for axis scaling
+        let x_min = data.iter().map(|(x, _)| *x).fold(f64::INFINITY, f64::min);
+        let x_max = data.iter().map(|(x, _)| *x).fold(f64::NEG_INFINITY, f64::max);
+        let y_min = data.iter().map(|(_, y)| *y).fold(f64::INFINITY, f64::min);
+        let y_max = data.iter().map(|(_, y)| *y).fold(f64::NEG_INFINITY, f64::max);
+        
+        // Add some padding to the bounds
+        let y_padding = (y_max - y_min) * 0.1;
+        let y_min = y_min - y_padding;
+        let y_max = y_max + y_padding;
+        
+        // Create dataset
+        let datasets = vec![
+            Dataset::default()
+                .name(feature_name)
+                .marker(symbols::Marker::Dot)
+                .style(Style::default().fg(Color::Cyan))
+                .data(&data)
+        ];
+        
+        // Create x-axis labels
+        let x_labels = vec![
+            Span::raw("0"),
+            Span::raw("10"), 
+            Span::raw("20"),
+            Span::raw("30"),
+            Span::raw("40"),
+            Span::raw("50")
+        ];
+        
+        // Create y-axis labels
+        let y_labels = vec![
+            Span::raw(format!("{:.1}", y_min)),
+            Span::raw(format!("{:.1}", (y_min + y_max) / 2.0)),
+            Span::raw(format!("{:.1}", y_max))
+        ];
+        
+        // Create and render the chart
+        let chart = Chart::new(datasets)
+            .block(Block::default()
+                .borders(Borders::ALL)
+                .title(Span::styled(
+                    " Time Series Preview ",
+                    Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+                ))
+            )
+            .x_axis(
+                Axis::default()
+                    .title("Time")
+                    .style(Style::default().fg(Color::Gray))
+                    .labels(x_labels)
+                    .bounds([x_min, x_max])
+            )
+            .y_axis(
+                Axis::default()
+                    .title("Value")
+                    .style(Style::default().fg(Color::Gray))
+                    .labels(y_labels)
+                    .bounds([y_min, y_max])
+            );
+        
+        f.render_widget(chart, area);
     }
     
     /// Check if an index in the features list is selectable (not a header or spacer)
@@ -996,35 +1132,7 @@ impl InteractiveFinder {
                             
                             preview_lines.push(Line::from(""));
                             
-                            // Placeholder text for the plot
-                            preview_lines.push(Line::from(Span::styled(
-                                "📈 TIME SERIES PREVIEW:",
-                                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
-                            )));
-                            preview_lines.push(Line::from(""));
-                            preview_lines.push(Line::from("╭─── Placeholder Time Series Chart ────╮"));
-                            preview_lines.push(Line::from("│  5.0 ┤                             ∩   │"));
-                            preview_lines.push(Line::from("│      │                           /  \\  │"));
-                            preview_lines.push(Line::from("│  4.0 ┤                         /     · │"));
-                            preview_lines.push(Line::from("│      │          ∩             /        │"));
-                            preview_lines.push(Line::from("│  3.0 ┤        /  \\          /         │"));
-                            preview_lines.push(Line::from("│      │       /    \\        /          │"));
-                            preview_lines.push(Line::from("│  2.0 ┤  ·   /      \\      /           │"));
-                            preview_lines.push(Line::from("│      │   \\ /        \\    /            │"));
-                            preview_lines.push(Line::from("│  1.0 ┤    ∨          \\  /             │"));
-                            preview_lines.push(Line::from("│      │                \\/              │"));
-                            preview_lines.push(Line::from("│  0.0 ┤────────────────────────────────│"));
-                            preview_lines.push(Line::from("│      └─────────────────────────────────│"));
-                            preview_lines.push(Line::from("│        Jan  Feb  Mar  Apr  May  Jun    │"));
-                            preview_lines.push(Line::from("╰─────────── Time Series Data ──────────╯"));
-                            preview_lines.push(Line::from(""));
-                            preview_lines.push(Line::from(Span::styled(
-                                "Note: Real S3 data will be plotted here once implemented",
-                                Style::default().fg(Color::DarkGray),
-                            )));
-                            
                             // Additional metadata note
-                            preview_lines.push(Line::from(""));
                             preview_lines.push(Line::from(Span::styled(
                                 "📊 METADATA:",
                                 Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD),
@@ -1033,10 +1141,11 @@ impl InteractiveFinder {
                                 Span::styled("Source: ", Style::default().fg(Color::Cyan)),
                                 Span::raw("Enhanced dataset analysis"),
                             ]));
-                            preview_lines.push(Line::from(vec![
-                                Span::styled("Index: ", Style::default().fg(Color::Cyan)),
-                                Span::raw(format!("{} of {}", self.selected_index + 1, features_data.len())),
-                            ]));
+                            preview_lines.push(Line::from(""));
+                            preview_lines.push(Line::from(Span::styled(
+                                "Note: Real S3 data will replace placeholder chart",
+                                Style::default().fg(Color::DarkGray),
+                            )));
                             }
                         }
                     }
@@ -1053,6 +1162,35 @@ impl InteractiveFinder {
             }
         }
         
+        // Handle Features view with chart layout separately
+        if self.current_level == ViewLevel::Features && self.current_features_data.is_some() {
+            if let Some(features_data) = &self.current_features_data {
+                if let Some(selected_feature) = features_data.get(self.selected_index) {
+                    if !selected_feature.name.starts_with("HEADER:") && selected_feature.name != "SPACER" {
+                        // Split the preview area: top for text, bottom for chart
+                        let preview_chunks = Layout::default()
+                            .direction(Direction::Vertical)
+                            .constraints([
+                                Constraint::Min(6),      // Text area minimum (reduced)
+                                Constraint::Length(16),  // Chart area bigger height
+                            ])
+                            .split(area);
+                        
+                        // Render text content
+                        let preview = Paragraph::new(Text::from(preview_lines))
+                            .block(Block::default().borders(Borders::ALL).title(" Feature Details "))
+                            .wrap(Wrap { trim: true });
+                        f.render_widget(preview, preview_chunks[0]);
+                        
+                        // Render chart or static value display
+                        self.render_feature_chart(f, preview_chunks[1], &selected_feature.name, selected_feature);
+                        return;
+                    }
+                }
+            }
+        }
+        
+        // Default preview rendering for all other cases
         let preview = Paragraph::new(Text::from(preview_lines))
             .block(Block::default().borders(Borders::ALL).title(" Preview "))
             .wrap(Wrap { trim: true });
