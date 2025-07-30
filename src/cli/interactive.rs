@@ -9,8 +9,13 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{
+        Block, Borders, List, ListItem, ListState, Paragraph, Wrap,
+        canvas::{Canvas, Line as CanvasLine, Points}, 
+        Axis, Chart, Dataset
+    },
     Frame, Terminal,
+    symbols,
 };
 use std::{collections::HashMap, fs::OpenOptions};
 use tracing::{debug, info};
@@ -66,6 +71,7 @@ pub struct InteractiveFinder {
     series_list: Vec<EnhancedSearchResult>,
     features_list: Vec<String>,
     current_features: Option<SeriesFeatures>,
+    current_features_data: Option<Vec<FeatureMetadata>>,
 }
 
 impl InteractiveFinder {
@@ -112,7 +118,61 @@ impl InteractiveFinder {
             series_list: Vec::new(),
             features_list: Vec::new(),
             current_features: None,
+            current_features_data: None,
         }
+    }
+    
+    /// Generate sample time series data for placeholder plots
+    fn generate_sample_data() -> Vec<(f64, f64)> {
+        (0..50)
+            .map(|i| {
+                let x = i as f64;
+                let y = (x * 0.3).sin() + (x * 0.1).cos() * 0.5 + (i % 7) as f64 * 0.1;
+                (x, y)
+            })
+            .collect()
+    }
+    
+    /// Check if an index in the features list is selectable (not a header or spacer)
+    fn is_feature_selectable(&self, index: usize) -> bool {
+        if let Some(features_data) = &self.current_features_data {
+            if let Some(feature) = features_data.get(index) {
+                return !feature.name.starts_with("HEADER:") && feature.name != "SPACER";
+            }
+        }
+        true // Default to selectable for other view levels
+    }
+    
+    /// Find the next selectable feature index when navigating up/down
+    fn find_next_selectable(&self, current_index: usize, direction: i32) -> usize {
+        if self.current_level != ViewLevel::Features {
+            return current_index;
+        }
+        
+        let max_index = self.features_list.len().saturating_sub(1);
+        let mut new_index = current_index;
+        
+        loop {
+            if direction > 0 {
+                // Moving down
+                if new_index >= max_index {
+                    break;
+                }
+                new_index += 1;
+            } else {
+                // Moving up
+                if new_index == 0 {
+                    break;
+                }
+                new_index -= 1;
+            }
+            
+            if self.is_feature_selectable(new_index) {
+                return new_index;
+            }
+        }
+        
+        current_index // Return original if no selectable item found
     }
     
     pub async fn run(mut self) -> Result<Option<Vec<EnhancedSearchResult>>> {
@@ -223,28 +283,23 @@ impl InteractiveFinder {
                             last_query_change = std::time::Instant::now();
                         }
                         KeyCode::Enter => {
+                            eprintln!("[DEBUG {}] ⌨️ Enter key pressed at level: {:?}", chrono::Utc::now().format("%H:%M:%S"), self.current_level);
                             match self.current_level {
                                 ViewLevel::Dataset => {
+                                    eprintln!("[DEBUG {}] 📊 Processing Enter at Dataset level, dataset_list.len(): {}", chrono::Utc::now().format("%H:%M:%S"), self.dataset_list.len());
                                     if !self.dataset_list.is_empty() {
                                         self.enter_dataset().await?;
                                     }
                                 }
                                 ViewLevel::Series => {
+                                    eprintln!("[DEBUG {}] 📈 Processing Enter at Series level, series_list.len(): {}, selected_index: {}", chrono::Utc::now().format("%H:%M:%S"), self.series_list.len(), self.selected_index);
                                     if !self.series_list.is_empty() {
                                         self.enter_series().await?;
                                     }
                                 }
                                 ViewLevel::Features => {
-                                    // Return the currently selected series (the one we're viewing features for)
-                                    if let Some(series_id) = &self.current_series {
-                                        if let Some(dataset_name) = &self.current_dataset {
-                                            if let Some(group) = self.dataset_groups.get(dataset_name) {
-                                                if let Some(series) = group.series.iter().find(|s| s.search_result.series_id == *series_id) {
-                                                    return Ok(Some(vec![series.clone()]));
-                                                }
-                                            }
-                                        }
-                                    }
+                                    // Do nothing - just stay at features level
+                                    eprintln!("[DEBUG {}] 🔧 Enter key pressed at Features level - ignoring", chrono::Utc::now().format("%H:%M:%S"));
                                 }
                             }
                         }
@@ -286,20 +341,36 @@ impl InteractiveFinder {
                             }
                         }
                         KeyCode::Up => {
-                            if self.selected_index > 0 {
-                                self.selected_index -= 1;
-                                self.list_state.select(Some(self.selected_index));
+                            if self.current_level == ViewLevel::Features {
+                                let new_index = self.find_next_selectable(self.selected_index, -1);
+                                if new_index != self.selected_index {
+                                    self.selected_index = new_index;
+                                    self.list_state.select(Some(self.selected_index));
+                                }
+                            } else {
+                                if self.selected_index > 0 {
+                                    self.selected_index -= 1;
+                                    self.list_state.select(Some(self.selected_index));
+                                }
                             }
                         }
                         KeyCode::Down => {
-                            let max_index = match self.current_level {
-                                ViewLevel::Dataset => self.dataset_list.len().saturating_sub(1),
-                                ViewLevel::Series => self.series_list.len().saturating_sub(1),
-                                ViewLevel::Features => self.features_list.len().saturating_sub(1),
-                            };
-                            if self.selected_index < max_index {
-                                self.selected_index += 1;
-                                self.list_state.select(Some(self.selected_index));
+                            if self.current_level == ViewLevel::Features {
+                                let new_index = self.find_next_selectable(self.selected_index, 1);
+                                if new_index != self.selected_index {
+                                    self.selected_index = new_index;
+                                    self.list_state.select(Some(self.selected_index));
+                                }
+                            } else {
+                                let max_index = match self.current_level {
+                                    ViewLevel::Dataset => self.dataset_list.len().saturating_sub(1),
+                                    ViewLevel::Series => self.series_list.len().saturating_sub(1),
+                                    ViewLevel::Features => self.features_list.len().saturating_sub(1),
+                                };
+                                if self.selected_index < max_index {
+                                    self.selected_index += 1;
+                                    self.list_state.select(Some(self.selected_index));
+                                }
                             }
                         }
                         KeyCode::F(1) => {
@@ -417,28 +488,44 @@ impl InteractiveFinder {
     }
     
     async fn enter_series(&mut self) -> Result<()> {
+        eprintln!("[DEBUG {}] 🚀 enter_series called, selected_index: {}, series_list.len(): {}", chrono::Utc::now().format("%H:%M:%S"), self.selected_index, self.series_list.len());
+        
         if let Some(series) = self.series_list.get(self.selected_index) {
             let dataset_id = series.search_result.dataset_id.clone();
             let series_id = series.search_result.series_id.clone();
+            
+            eprintln!("[DEBUG {}] 📝 Setting up features view for series: {}, dataset: {}", chrono::Utc::now().format("%H:%M:%S"), series_id, dataset_id);
             
             self.current_series = Some(series_id);
             self.current_level = ViewLevel::Features;
             
             // Load actual features from database
+            eprintln!("[DEBUG {}] 🔄 About to call load_features_for_dataset...", chrono::Utc::now().format("%H:%M:%S"));
             self.load_features_for_dataset(&dataset_id).await?;
             
+            // Start at the first selectable feature (skip headers/spacers)
             self.selected_index = 0;
-            self.list_state.select(Some(0));
+            let first_selectable = self.find_next_selectable(0, 1);
+            if first_selectable != 0 || self.is_feature_selectable(0) {
+                self.selected_index = if self.is_feature_selectable(0) { 0 } else { first_selectable };
+            }
+            self.list_state.select(Some(self.selected_index));
+            
+            eprintln!("[DEBUG {}] ✅ enter_series completed successfully", chrono::Utc::now().format("%H:%M:%S"));
+        } else {
+            eprintln!("[DEBUG {}] ❌ No series found at selected_index: {}", chrono::Utc::now().format("%H:%M:%S"), self.selected_index);
         }
         Ok(())
     }
     
     async fn load_features_for_dataset(&mut self, dataset_id: &str) -> Result<()> {
-        debug!("Loading features for dataset: {}", dataset_id);
+        eprintln!("[DEBUG {}] 🔍 load_features_for_dataset called with dataset_id: '{}'", chrono::Utc::now().format("%H:%M:%S"), dataset_id);
         
         // Get enhanced dataset metadata
+        eprintln!("[DEBUG {}] 📞 About to call get_enhanced_dataset_column_metadata...", chrono::Utc::now().format("%H:%M:%S"));
         match self.db.get_enhanced_dataset_column_metadata(dataset_id) {
             Ok(Some(enhanced_info)) => {
+                eprintln!("[DEBUG {}] ✅ Enhanced metadata found with {} features", chrono::Utc::now().format("%H:%M:%S"), enhanced_info.features.len());
                 // Group features by attribute type
                 let mut feature_categories = HashMap::new();
                 
@@ -455,67 +542,112 @@ impl InteractiveFinder {
                         .push(feature);
                 }
                 
-                // Convert to FeatureCategory structs and create features list for display
-                let mut categories = Vec::new();
+                // Create segmented list with category headers and individual features
+                let mut all_features = Vec::new();
                 self.features_list.clear();
                 
-                // Add categories in specific order matching your image
+                // Add features in specific order with category headers
                 let category_order = vec![
-                    "Targets",
-                    "Historical Covariates", 
-                    "Static Covariates",
-                    "Future Covariates"
+                    ("Targets", "🎯"),
+                    ("Historical Covariates", "📊"), 
+                    ("Static Covariates", "📐"),
+                    ("Future Covariates", "🔮")
                 ];
                 
-                for &category_name in &category_order {
+                for &(category_name, icon) in &category_order {
                     if let Some(features) = feature_categories.remove(category_name) {
-                        let count = features.len();
-                        self.features_list.push(format!("📋 {}: {} features", category_name, Self::format_number(count)));
-                        
-                        categories.push(FeatureCategory {
-                            name: category_name.to_string(),
-                            features,
-                            count,
-                        });
+                        if !features.is_empty() {
+                            // Store the first attribute for header and spacer
+                            let first_attribute = features[0].attribute.clone();
+                            
+                            // Add category header (non-selectable display item)
+                            self.features_list.push(format!("─── {} {} ───", icon, category_name.to_uppercase()));
+                            all_features.push(FeatureMetadata {
+                                name: format!("HEADER: {}", category_name),
+                                modality: crate::db::Modality::Categorical,
+                                temporality: crate::db::Temporality::Static,
+                                attribute: first_attribute.clone(),
+                                scope: crate::db::Scope::Global,
+                                data_type: "header".to_string(),
+                                description: None,
+                            });
+                            
+                            // Add individual features under this category
+                            for feature in features {
+                                let modality_str = match feature.modality {
+                                    crate::db::Modality::Numerical => "Numeric",
+                                    crate::db::Modality::Categorical => "Categorical",
+                                };
+                                let temporality_str = match feature.temporality {
+                                    crate::db::Temporality::Static => "Static",
+                                    crate::db::Temporality::Dynamic => "Dynamic",
+                                };
+                                
+                                let display_text = format!("  {} {} ({} | {})", 
+                                    icon, feature.name, modality_str, temporality_str);
+                                self.features_list.push(display_text);
+                                all_features.push(feature);
+                            }
+                            
+                            // Add spacing between categories
+                            if category_name != "Future Covariates" { // Don't add space after last category
+                                self.features_list.push("".to_string());
+                                all_features.push(FeatureMetadata {
+                                    name: "SPACER".to_string(),
+                                    modality: crate::db::Modality::Categorical,
+                                    temporality: crate::db::Temporality::Static,
+                                    attribute: first_attribute.clone(),
+                                    scope: crate::db::Scope::Global,
+                                    data_type: "spacer".to_string(),
+                                    description: None,
+                                });
+                            }
+                        }
                     }
                 }
                 
-                // Add any remaining categories not in the standard order
-                for (category_name, features) in feature_categories {
-                    let count = features.len();
-                    self.features_list.push(format!("📋 {}: {} features", category_name, Self::format_number(count)));
-                    
-                    categories.push(FeatureCategory {
-                        name: category_name,
-                        features,
-                        count,
-                    });
+                // Add any remaining features not in the standard order
+                for (_category_name, features) in feature_categories {
+                    for feature in features {
+                        let modality_str = match feature.modality {
+                            crate::db::Modality::Numerical => "Numeric",
+                            crate::db::Modality::Categorical => "Categorical",
+                        };
+                        let temporality_str = match feature.temporality {
+                            crate::db::Temporality::Static => "Static",
+                            crate::db::Temporality::Dynamic => "Dynamic",
+                        };
+                        
+                        let display_text = format!("📋 {} ({} | {})", 
+                            feature.name, modality_str, temporality_str);
+                        self.features_list.push(display_text);
+                        all_features.push(feature);
+                    }
                 }
                 
-                self.current_features = Some(SeriesFeatures {
-                    series_id: self.current_series.as_ref().unwrap().clone(),
-                    dataset_id: dataset_id.to_string(),
-                    categories,
-                });
+                // Store both the enhanced info and the flat features list
+                self.current_features_data = Some(all_features);
                 
-                debug!("Loaded {} feature categories for dataset {}", 
-                       self.features_list.len(), dataset_id);
+                eprintln!("[DEBUG {}] ✅ Loaded {} individual features for dataset {}", 
+                         chrono::Utc::now().format("%H:%M:%S"), self.features_list.len(), dataset_id);
             }
             Ok(None) => {
-                debug!("No enhanced metadata found for dataset: {}", dataset_id);
+                eprintln!("[DEBUG {}] ❌ No enhanced metadata found for dataset: {}", chrono::Utc::now().format("%H:%M:%S"), dataset_id);
                 // Fallback to basic features
                 self.features_list = vec![
                     "📋 Basic Features: 2 features".to_string(),
                 ];
                 self.current_features = None;
+                self.current_features_data = None;
             }
             Err(e) => {
-                debug!("Error loading features for dataset {}: {}", dataset_id, e);
+                eprintln!("[DEBUG {}] 💥 Error loading features for dataset {}: {}", chrono::Utc::now().format("%H:%M:%S"), dataset_id, e);
                 // Fallback to basic features
                 self.features_list = vec![
                     "📋 Error loading features".to_string(),
                 ];
                 self.current_features = None;
+                self.current_features_data = None;
             }
         }
         
@@ -635,12 +767,35 @@ impl InteractiveFinder {
                     .iter()
                     .enumerate()
                     .map(|(i, feature)| {
-                        let content = format!("🔧 {}", feature);
-                        let style = if i == self.selected_index {
+                        let is_header = feature.starts_with("───");
+                        let is_spacer = feature.is_empty();
+                        let is_selectable = self.is_feature_selectable(i);
+                        
+                        let content = if is_header {
+                            // Header styling - no prefix
+                            feature.clone()
+                        } else if is_spacer {
+                            // Spacer - just empty
+                            "".to_string()
+                        } else {
+                            // Regular feature - no extra prefix needed as it's already formatted
+                            feature.clone()
+                        };
+                        
+                        let style = if is_header {
+                            // Headers are bold and colored but not selectable
+                            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                        } else if is_spacer {
+                            // Spacers are invisible
+                            Style::default()
+                        } else if i == self.selected_index && is_selectable {
+                            // Selected feature
                             Style::default().bg(Color::Blue).fg(Color::White)
                         } else {
+                            // Regular feature
                             Style::default()
                         };
+                        
                         ListItem::new(content).style(style)
                     })
                     .collect()
@@ -658,7 +813,7 @@ impl InteractiveFinder {
         let help_text = match self.current_level {
             ViewLevel::Dataset => "↑/↓: navigate, Enter: enter dataset, F1: toggle preview, Esc: quit",
             ViewLevel::Series => "↑/↓: navigate, Enter: view features, F1: toggle preview, Esc: back to datasets", 
-            ViewLevel::Features => "↑/↓: navigate, Enter: select series, F1: toggle preview, Esc: back to series",
+            ViewLevel::Features => "↑/↓: navigate features, F1: toggle preview, Esc: back to series",
         };
         let status = Paragraph::new(help_text)
             .style(Style::default().bg(Color::DarkGray).fg(Color::White));
@@ -777,132 +932,111 @@ impl InteractiveFinder {
                 }
             }
             ViewLevel::Features => {
-                if let Some(features) = &self.current_features {
-                    if let Some(selected_category_name) = self.features_list.get(self.selected_index) {
-                        // Extract category name from the display string "📋 Category: X features"
-                        let category_name = selected_category_name
-                            .trim_start_matches("📋 ")
-                            .split(": ")
-                            .next()
-                            .unwrap_or("Unknown");
-                        
-                        // Find the matching category
-                        if let Some(category) = features.categories.iter().find(|c| c.name == category_name) {
-                            // Feature analysis header
+                if let Some(features_data) = &self.current_features_data {
+                    if let Some(selected_feature_display) = self.features_list.get(self.selected_index) {
+                        // Get the actual feature from the features list
+                        if let Some(selected_feature) = features_data.get(self.selected_index) {
+                            // Skip headers and spacers
+                            if selected_feature.name.starts_with("HEADER:") || selected_feature.name == "SPACER" {
+                                preview_lines.push(Line::from(Span::styled(
+                                    "📋 FEATURE CATEGORY",
+                                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                                )));
+                                preview_lines.push(Line::from(""));
+                                preview_lines.push(Line::from("Select an individual feature to view details"));
+                            } else {
+                            // Feature header with icon and name
+                            let icon = if selected_feature_display.starts_with("🎯") { "🎯" }
+                                     else if selected_feature_display.starts_with("📊") { "📊" }
+                                     else if selected_feature_display.starts_with("📐") { "📐" }
+                                     else if selected_feature_display.starts_with("🔮") { "🔮" }
+                                     else { "📋" };
+                                     
                             preview_lines.push(Line::from(Span::styled(
-                                format!("{} FEATURES", category_name.to_uppercase()),
+                                format!("{} FEATURE DETAILS", icon),
                                 Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
                             )));
                             preview_lines.push(Line::from(""));
                             
-                            // Feature analysis summary
+                            // Feature name
+                            preview_lines.push(Line::from(vec![
+                                Span::styled("Name: ", Style::default().fg(Color::Cyan)),
+                                Span::styled(selected_feature.name.clone(), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+                            ]));
+                            
+                            // Feature type information
+                            let modality_str = match selected_feature.modality {
+                                crate::db::Modality::Numerical => "Numerical",
+                                crate::db::Modality::Categorical => "Categorical",
+                            };
+                            preview_lines.push(Line::from(vec![
+                                Span::styled("Type: ", Style::default().fg(Color::Cyan)),
+                                Span::raw(modality_str),
+                            ]));
+                            
+                            let temporality_str = match selected_feature.temporality {
+                                crate::db::Temporality::Static => "Static",
+                                crate::db::Temporality::Dynamic => "Dynamic",
+                            };
+                            preview_lines.push(Line::from(vec![
+                                Span::styled("Temporality: ", Style::default().fg(Color::Cyan)),
+                                Span::raw(temporality_str),
+                            ]));
+                            
+                            let attribute_str = match selected_feature.attribute {
+                                FeatureAttribute::Targets => "Target Variable",
+                                FeatureAttribute::HistoricalCovariates => "Historical Covariate",
+                                FeatureAttribute::FutureCovariates => "Future Covariate", 
+                                FeatureAttribute::StaticCovariates => "Static Covariate",
+                            };
+                            preview_lines.push(Line::from(vec![
+                                Span::styled("Category: ", Style::default().fg(Color::Cyan)),
+                                Span::raw(attribute_str),
+                            ]));
+                            
+                            preview_lines.push(Line::from(""));
+                            
+                            // Placeholder text for the plot
                             preview_lines.push(Line::from(Span::styled(
-                                "🔍 FEATURE ANALYSIS:",
+                                "📈 TIME SERIES PREVIEW:",
                                 Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
                             )));
+                            preview_lines.push(Line::from(""));
+                            preview_lines.push(Line::from("╭─── Placeholder Time Series Chart ────╮"));
+                            preview_lines.push(Line::from("│  5.0 ┤                             ∩   │"));
+                            preview_lines.push(Line::from("│      │                           /  \\  │"));
+                            preview_lines.push(Line::from("│  4.0 ┤                         /     · │"));
+                            preview_lines.push(Line::from("│      │          ∩             /        │"));
+                            preview_lines.push(Line::from("│  3.0 ┤        /  \\          /         │"));
+                            preview_lines.push(Line::from("│      │       /    \\        /          │"));
+                            preview_lines.push(Line::from("│  2.0 ┤  ·   /      \\      /           │"));
+                            preview_lines.push(Line::from("│      │   \\ /        \\    /            │"));
+                            preview_lines.push(Line::from("│  1.0 ┤    ∨          \\  /             │"));
+                            preview_lines.push(Line::from("│      │                \\/              │"));
+                            preview_lines.push(Line::from("│  0.0 ┤────────────────────────────────│"));
+                            preview_lines.push(Line::from("│      └─────────────────────────────────│"));
+                            preview_lines.push(Line::from("│        Jan  Feb  Mar  Apr  May  Jun    │"));
+                            preview_lines.push(Line::from("╰─────────── Time Series Data ──────────╯"));
+                            preview_lines.push(Line::from(""));
+                            preview_lines.push(Line::from(Span::styled(
+                                "Note: Real S3 data will be plotted here once implemented",
+                                Style::default().fg(Color::DarkGray),
+                            )));
                             
-                            // Count features by modality
-                            let mut numerical_count = 0;
-                            let mut categorical_count = 0;
-                            
-                            for feature in &category.features {
-                                match feature.modality {
-                                    crate::db::Modality::Numerical => numerical_count += 1,
-                                    crate::db::Modality::Categorical => categorical_count += 1,
-                                    _ => {}
-                                }
-                            }
-                            
-                            if category.name == "Targets" {
-                                preview_lines.push(Line::from(vec![
-                                    Span::styled("🎯 Targets: ", Style::default().fg(Color::Cyan)),
-                                    Span::raw(format!("{} features", Self::format_number(category.count))),
-                                ]));
-                            } else {
-                                preview_lines.push(Line::from(vec![
-                                    Span::styled("📊 ", Style::default().fg(Color::Cyan)),
-                                    Span::raw(format!("{}: {} features", category.name, Self::format_number(category.count))),
-                                ]));
-                            }
-                            
-                            if numerical_count > 0 || categorical_count > 0 {
-                                preview_lines.push(Line::from(vec![
-                                    Span::styled("📈 Numerical Covariates: ", Style::default().fg(Color::Cyan)),
-                                    Span::raw(format!("{} features", Self::format_number(numerical_count))),
-                                ]));
-                                preview_lines.push(Line::from(vec![
-                                    Span::styled("🔤 Categorical Covariates: ", Style::default().fg(Color::Cyan)),
-                                    Span::raw(format!("{} features", Self::format_number(categorical_count))),
-                                ]));
-                            }
-                            
-                            // Time dimension (assuming timestamp for time series)
-                            if !category.features.is_empty() {
-                                preview_lines.push(Line::from(vec![
-                                    Span::styled("⏰ Time Dimension: ", Style::default().fg(Color::Cyan)),
-                                    Span::raw("timestamp (datetime)"),
-                                ]));
-                            }
-                            
-                            // Targets section if this is targets
-                            if category.name == "Targets" {
-                                preview_lines.push(Line::from(""));
-                                preview_lines.push(Line::from(Span::styled(
-                                    "🎯 TARGETS:",
-                                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-                                )));
-                                
-                                for (i, feature) in category.features.iter().take(10).enumerate() {
-                                    let modality_str = match feature.modality {
-                                        crate::db::Modality::Numerical => "Numeric",
-                                        crate::db::Modality::Categorical => "Categorical",
-                                        _ => "Unknown",
-                                    };
-                                    
-                                    let temporality_str = match feature.temporality {
-                                        crate::db::Temporality::Dynamic => "Dynamic",
-                                        crate::db::Temporality::Static => "Static",
-                                    };
-                                    
-                                    preview_lines.push(Line::from(format!(
-                                        "{}. {} ({} | {} | {})",
-                                        i + 1,
-                                        feature.name,
-                                        modality_str,
-                                        temporality_str,
-                                        "Categorical" // Matching your image format
-                                    )));
-                                }
-                                
-                                if category.features.len() > 10 {
-                                    preview_lines.push(Line::from(format!("... and {} more", Self::format_number(category.features.len() - 10))));
-                                }
-                            } else {
-                                // Show individual features for other categories
-                                preview_lines.push(Line::from(""));
-                                preview_lines.push(Line::from(Span::styled(
-                                    format!("📋 {}:", category.name.to_uppercase()),
-                                    Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD),
-                                )));
-                                
-                                for (i, feature) in category.features.iter().take(20).enumerate() {
-                                    let modality_str = match feature.modality {
-                                        crate::db::Modality::Numerical => "Numeric",
-                                        crate::db::Modality::Categorical => "Categorical", 
-                                        _ => "Unknown",
-                                    };
-                                    
-                                    preview_lines.push(Line::from(format!(
-                                        "{}. {} ({})",
-                                        i + 1,
-                                        feature.name,
-                                        modality_str
-                                    )));
-                                }
-                                
-                                if category.features.len() > 20 {
-                                    preview_lines.push(Line::from(format!("... and {} more", Self::format_number(category.features.len() - 20))));
-                                }
+                            // Additional metadata note
+                            preview_lines.push(Line::from(""));
+                            preview_lines.push(Line::from(Span::styled(
+                                "📊 METADATA:",
+                                Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD),
+                            )));
+                            preview_lines.push(Line::from(vec![
+                                Span::styled("Source: ", Style::default().fg(Color::Cyan)),
+                                Span::raw("Enhanced dataset analysis"),
+                            ]));
+                            preview_lines.push(Line::from(vec![
+                                Span::styled("Index: ", Style::default().fg(Color::Cyan)),
+                                Span::raw(format!("{} of {}", self.selected_index + 1, features_data.len())),
+                            ]));
                             }
                         }
                     }
