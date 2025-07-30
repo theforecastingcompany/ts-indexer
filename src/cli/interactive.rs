@@ -16,7 +16,7 @@ use std::{collections::HashMap, fs::OpenOptions};
 use tracing::{debug, info};
 use chrono;
 
-use crate::db::Database;
+use crate::db::{Database, FeatureMetadata, FeatureAttribute};
 use crate::search::{EnhancedSearchResult, SearchEngine};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -34,9 +34,17 @@ struct DatasetGroup {
 }
 
 #[derive(Debug, Clone)]
+struct FeatureCategory {
+    name: String,
+    features: Vec<FeatureMetadata>,
+    count: usize,
+}
+
+#[derive(Debug, Clone)]
 struct SeriesFeatures {
     series_id: String,
-    features: Vec<String>,
+    dataset_id: String,
+    categories: Vec<FeatureCategory>,
 }
 
 pub struct InteractiveFinder {
@@ -57,6 +65,7 @@ pub struct InteractiveFinder {
     dataset_list: Vec<String>,
     series_list: Vec<EnhancedSearchResult>,
     features_list: Vec<String>,
+    current_features: Option<SeriesFeatures>,
 }
 
 impl InteractiveFinder {
@@ -86,6 +95,7 @@ impl InteractiveFinder {
             dataset_list: Vec::new(),
             series_list: Vec::new(),
             features_list: Vec::new(),
+            current_features: None,
         }
     }
     
@@ -290,12 +300,16 @@ impl InteractiveFinder {
     async fn update_search(&mut self) -> Result<()> {
         debug!("Updating search for query: '{}'", self.query);
         
+        // Use very large limits to handle massive searches - we have 1M+ series total
+        // Empty queries return all series (no limit needed at DB level)
+        let limit = Some(2000000); // Large enough to handle over 1 million series
+        
         // Perform search using existing search engine
-        let search_query = crate::search::create_search_query(self.query.clone(), Some(1000));
+        let search_query = crate::search::create_search_query(self.query.clone(), limit);
         
         // Add timeout and error handling for search
         let search_result = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(60), // Large timeout for processing over 1 million series
             self.search_engine.search(search_query)
         ).await;
         
@@ -324,8 +338,9 @@ impl InteractiveFinder {
             }
         };
         
-        // Group results by dataset, filtering out dataset-level pseudo-entries
+        // Group search results by dataset - no filtering needed since search_index has no pseudo-entries
         self.dataset_groups.clear();
+        
         for result in search_summary.results {
             let dataset_name = result.search_result.dataset_name
                 .clone()
@@ -333,19 +348,17 @@ impl InteractiveFinder {
             
             let group = self.dataset_groups.entry(dataset_name.clone()).or_insert_with(|| {
                 DatasetGroup {
-                    name: dataset_name,
+                    name: dataset_name.clone(),
                     series: Vec::new(),
                     total_records: 0,
                 }
             });
             
-            // Only include actual series (not dataset-level pseudo-entries)
-            // Dataset-level entries have series_id == dataset_id
-            if result.search_result.series_id != result.search_result.dataset_id {
-                group.series.push(result.clone());
-                // Only count records from actual series, not dataset-level entries
-                group.total_records += result.search_result.record_count;
-            }
+            // Add all series - no filtering needed since search_index only contains legitimate series
+            group.series.push(result.clone());
+            group.total_records += result.search_result.record_count;
+            debug!("Added series {} to dataset {} (record_count: {})", 
+                   result.search_result.series_id, dataset_name, result.search_result.record_count);
         }
         
         // Update dataset list for display
@@ -389,17 +402,14 @@ impl InteractiveFinder {
     
     async fn enter_series(&mut self) -> Result<()> {
         if let Some(series) = self.series_list.get(self.selected_index) {
-            self.current_series = Some(series.search_result.series_id.clone());
+            let dataset_id = series.search_result.dataset_id.clone();
+            let series_id = series.search_result.series_id.clone();
+            
+            self.current_series = Some(series_id);
             self.current_level = ViewLevel::Features;
             
-            // TODO: Load actual features from database
-            // For now, show some sample features
-            self.features_list = vec![
-                "timestamp".to_string(),
-                "value".to_string(),
-                "target".to_string(),
-                "features".to_string(),
-            ];
+            // Load actual features from database
+            self.load_features_for_dataset(&dataset_id).await?;
             
             self.selected_index = 0;
             self.list_state.select(Some(0));
@@ -407,10 +417,100 @@ impl InteractiveFinder {
         Ok(())
     }
     
+    async fn load_features_for_dataset(&mut self, dataset_id: &str) -> Result<()> {
+        debug!("Loading features for dataset: {}", dataset_id);
+        
+        // Get enhanced dataset metadata
+        match self.db.get_enhanced_dataset_column_metadata(dataset_id) {
+            Ok(Some(enhanced_info)) => {
+                // Group features by attribute type
+                let mut feature_categories = HashMap::new();
+                
+                for feature in enhanced_info.features {
+                    let category_name = match feature.attribute {
+                        FeatureAttribute::Targets => "Targets",
+                        FeatureAttribute::HistoricalCovariates => "Historical Covariates", 
+                        FeatureAttribute::FutureCovariates => "Future Covariates",
+                        FeatureAttribute::StaticCovariates => "Static Covariates",
+                    };
+                    
+                    feature_categories.entry(category_name.to_string())
+                        .or_insert_with(Vec::new)
+                        .push(feature);
+                }
+                
+                // Convert to FeatureCategory structs and create features list for display
+                let mut categories = Vec::new();
+                self.features_list.clear();
+                
+                // Add categories in specific order matching your image
+                let category_order = vec![
+                    "Targets",
+                    "Historical Covariates", 
+                    "Static Covariates",
+                    "Future Covariates"
+                ];
+                
+                for &category_name in &category_order {
+                    if let Some(features) = feature_categories.remove(category_name) {
+                        let count = features.len();
+                        self.features_list.push(format!("📋 {}: {} features", category_name, count));
+                        
+                        categories.push(FeatureCategory {
+                            name: category_name.to_string(),
+                            features,
+                            count,
+                        });
+                    }
+                }
+                
+                // Add any remaining categories not in the standard order
+                for (category_name, features) in feature_categories {
+                    let count = features.len();
+                    self.features_list.push(format!("📋 {}: {} features", category_name, count));
+                    
+                    categories.push(FeatureCategory {
+                        name: category_name,
+                        features,
+                        count,
+                    });
+                }
+                
+                self.current_features = Some(SeriesFeatures {
+                    series_id: self.current_series.as_ref().unwrap().clone(),
+                    dataset_id: dataset_id.to_string(),
+                    categories,
+                });
+                
+                debug!("Loaded {} feature categories for dataset {}", 
+                       self.features_list.len(), dataset_id);
+            }
+            Ok(None) => {
+                debug!("No enhanced metadata found for dataset: {}", dataset_id);
+                // Fallback to basic features
+                self.features_list = vec![
+                    "📋 Basic Features: 2 features".to_string(),
+                ];
+                self.current_features = None;
+            }
+            Err(e) => {
+                debug!("Error loading features for dataset {}: {}", dataset_id, e);
+                // Fallback to basic features
+                self.features_list = vec![
+                    "📋 Error loading features".to_string(),
+                ];
+                self.current_features = None;
+            }
+        }
+        
+        Ok(())
+    }
+    
     async fn go_back_to_dataset(&mut self) -> Result<()> {
         self.current_level = ViewLevel::Dataset;
         self.current_dataset = None;
         self.current_series = None;
+        self.current_features = None;
         self.selected_index = 0;
         self.list_state.select(Some(0));
         Ok(())
@@ -419,6 +519,7 @@ impl InteractiveFinder {
     async fn go_back_to_series(&mut self) -> Result<()> {
         self.current_level = ViewLevel::Series;
         self.current_series = None;
+        self.current_features = None;
         self.selected_index = 0;
         self.list_state.select(Some(0));
         Ok(())
@@ -481,7 +582,7 @@ impl InteractiveFinder {
                     .enumerate()
                     .map(|(i, dataset_name)| {
                         let group = self.dataset_groups.get(dataset_name).unwrap();
-                        let content = format!("📊 {} ({} series, {} total records)", 
+                        let content = format!("📊 {} ({} matching series, {} records)", 
                             dataset_name,
                             group.series.len(),
                             group.total_records
@@ -660,39 +761,144 @@ impl InteractiveFinder {
                 }
             }
             ViewLevel::Features => {
-                if let Some(feature) = self.features_list.get(self.selected_index) {
-                    // Feature preview
+                if let Some(features) = &self.current_features {
+                    if let Some(selected_category_name) = self.features_list.get(self.selected_index) {
+                        // Extract category name from the display string "📋 Category: X features"
+                        let category_name = selected_category_name
+                            .trim_start_matches("📋 ")
+                            .split(": ")
+                            .next()
+                            .unwrap_or("Unknown");
+                        
+                        // Find the matching category
+                        if let Some(category) = features.categories.iter().find(|c| c.name == category_name) {
+                            // Feature analysis header
+                            preview_lines.push(Line::from(Span::styled(
+                                format!("{} FEATURES", category_name.to_uppercase()),
+                                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                            )));
+                            preview_lines.push(Line::from(""));
+                            
+                            // Feature analysis summary
+                            preview_lines.push(Line::from(Span::styled(
+                                "🔍 FEATURE ANALYSIS:",
+                                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                            )));
+                            
+                            // Count features by modality
+                            let mut numerical_count = 0;
+                            let mut categorical_count = 0;
+                            
+                            for feature in &category.features {
+                                match feature.modality {
+                                    crate::db::Modality::Numerical => numerical_count += 1,
+                                    crate::db::Modality::Categorical => categorical_count += 1,
+                                    _ => {}
+                                }
+                            }
+                            
+                            if category.name == "Targets" {
+                                preview_lines.push(Line::from(vec![
+                                    Span::styled("🎯 Targets: ", Style::default().fg(Color::Cyan)),
+                                    Span::raw(format!("{} features", category.count)),
+                                ]));
+                            } else {
+                                preview_lines.push(Line::from(vec![
+                                    Span::styled("📊 ", Style::default().fg(Color::Cyan)),
+                                    Span::raw(format!("{}: {} features", category.name, category.count)),
+                                ]));
+                            }
+                            
+                            if numerical_count > 0 || categorical_count > 0 {
+                                preview_lines.push(Line::from(vec![
+                                    Span::styled("📈 Numerical Covariates: ", Style::default().fg(Color::Cyan)),
+                                    Span::raw(format!("{} features", numerical_count)),
+                                ]));
+                                preview_lines.push(Line::from(vec![
+                                    Span::styled("🔤 Categorical Covariates: ", Style::default().fg(Color::Cyan)),
+                                    Span::raw(format!("{} features", categorical_count)),
+                                ]));
+                            }
+                            
+                            // Time dimension (assuming timestamp for time series)
+                            if !category.features.is_empty() {
+                                preview_lines.push(Line::from(vec![
+                                    Span::styled("⏰ Time Dimension: ", Style::default().fg(Color::Cyan)),
+                                    Span::raw("timestamp (datetime)"),
+                                ]));
+                            }
+                            
+                            // Targets section if this is targets
+                            if category.name == "Targets" {
+                                preview_lines.push(Line::from(""));
+                                preview_lines.push(Line::from(Span::styled(
+                                    "🎯 TARGETS:",
+                                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                                )));
+                                
+                                for (i, feature) in category.features.iter().take(10).enumerate() {
+                                    let modality_str = match feature.modality {
+                                        crate::db::Modality::Numerical => "Numeric",
+                                        crate::db::Modality::Categorical => "Categorical",
+                                        _ => "Unknown",
+                                    };
+                                    
+                                    let temporality_str = match feature.temporality {
+                                        crate::db::Temporality::Dynamic => "Dynamic",
+                                        crate::db::Temporality::Static => "Static",
+                                    };
+                                    
+                                    preview_lines.push(Line::from(format!(
+                                        "{}. {} ({} | {} | {})",
+                                        i + 1,
+                                        feature.name,
+                                        modality_str,
+                                        temporality_str,
+                                        "Categorical" // Matching your image format
+                                    )));
+                                }
+                                
+                                if category.features.len() > 10 {
+                                    preview_lines.push(Line::from(format!("... and {} more", category.features.len() - 10)));
+                                }
+                            } else {
+                                // Show individual features for other categories
+                                preview_lines.push(Line::from(""));
+                                preview_lines.push(Line::from(Span::styled(
+                                    format!("📋 {}:", category.name.to_uppercase()),
+                                    Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD),
+                                )));
+                                
+                                for (i, feature) in category.features.iter().take(20).enumerate() {
+                                    let modality_str = match feature.modality {
+                                        crate::db::Modality::Numerical => "Numeric",
+                                        crate::db::Modality::Categorical => "Categorical", 
+                                        _ => "Unknown",
+                                    };
+                                    
+                                    preview_lines.push(Line::from(format!(
+                                        "{}. {} ({})",
+                                        i + 1,
+                                        feature.name,
+                                        modality_str
+                                    )));
+                                }
+                                
+                                if category.features.len() > 20 {
+                                    preview_lines.push(Line::from(format!("... and {} more", category.features.len() - 20)));
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // Fallback for when no enhanced features are available
                     preview_lines.push(Line::from(Span::styled(
-                        "Feature Details",
+                        "Basic Features", 
                         Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
                     )));
                     preview_lines.push(Line::from(""));
-                    
-                    preview_lines.push(Line::from(vec![
-                        Span::styled("Feature: ", Style::default().fg(Color::Cyan)),
-                        Span::raw(feature),
-                    ]));
-                    
-                    if let Some(series_id) = &self.current_series {
-                        preview_lines.push(Line::from(vec![
-                            Span::styled("Series: ", Style::default().fg(Color::Cyan)),
-                            Span::raw(series_id),
-                        ]));
-                    }
-                    
-                    if let Some(dataset) = &self.current_dataset {
-                        preview_lines.push(Line::from(vec![
-                            Span::styled("Dataset: ", Style::default().fg(Color::Cyan)),
-                            Span::raw(dataset),
-                        ]));
-                    }
-                    
-                    // TODO: Add actual feature metadata when available
-                    preview_lines.push(Line::from(""));
-                    preview_lines.push(Line::from(vec![
-                        Span::styled("Type: ", Style::default().fg(Color::Cyan)),
-                        Span::raw("Time Series Column"),  // Placeholder
-                    ]));
+                    preview_lines.push(Line::from("No detailed feature metadata available"));
+                    preview_lines.push(Line::from("This dataset may need enhanced indexing"));
                 }
             }
         }

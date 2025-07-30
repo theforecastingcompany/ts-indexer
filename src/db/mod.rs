@@ -220,13 +220,13 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_datasets_completed ON datasets(indexing_completed_at);
         "#)?;
         
-        // Search optimization view for fuzzy matching
+        // Search optimization view for fuzzy matching - only series_metadata, no pseudo-entries
         self.conn.lock().unwrap().execute_batch(r#"
             CREATE OR REPLACE VIEW search_index AS
             SELECT 
                 sm.series_id,
                 sm.dataset_id,
-                d.name as dataset_name,
+                COALESCE(d.name, sm.dataset_id) as dataset_name,
                 d.description as dataset_description,
                 d.dataset_type,
                 d.source as dataset_source,
@@ -238,23 +238,7 @@ impl Database {
                 sm.last_timestamp,
                 sm.record_count
             FROM series_metadata sm
-            LEFT JOIN datasets d ON sm.dataset_id = d.dataset_id
-            UNION ALL
-            SELECT 
-                d.dataset_id as series_id,
-                d.dataset_id,
-                d.name as dataset_name,
-                d.description as dataset_description,
-                d.dataset_type,
-                d.source as dataset_source,
-                d.dataset_type as theme,
-                d.description,
-                NULL as tags_text,
-                d.storage_location as source_file,
-                NULL as first_timestamp,
-                NULL as last_timestamp,
-                d.total_records as record_count
-            FROM datasets d;
+            LEFT JOIN datasets d ON sm.dataset_id = d.dataset_id;
         "#)?;
         
         debug!("Database schema initialized successfully");
@@ -397,9 +381,44 @@ impl Database {
     
     /// Search series with fuzzy matching
     pub fn search_series(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
-        let search_query = format!("%{}%", query.to_lowercase());
-        
         let conn = self.conn.lock().unwrap();
+        
+        // For empty queries, return all series without any filtering or limiting
+        if query.trim().is_empty() {
+            let mut stmt = conn.prepare(r#"
+                SELECT series_id, dataset_id, dataset_name, theme, description, 
+                       tags_text, record_count, first_timestamp, last_timestamp
+                FROM search_index
+                ORDER BY record_count DESC
+            "#)?;
+            
+            let rows = stmt.query_map([], |row| {
+                Ok(SearchResult {
+                    series_id: row.get(0)?,
+                    dataset_id: row.get(1)?,
+                    dataset_name: row.get(2)?,
+                    theme: row.get(3)?,
+                    description: row.get(4)?,
+                    tags_text: row.get(5)?,
+                    record_count: row.get(6)?,
+                    first_timestamp: row.get::<_, Option<i64>>(7)?
+                        .and_then(|ts| DateTime::from_timestamp(ts, 0))
+                        .unwrap_or_else(|| Utc::now()),
+                    last_timestamp: row.get::<_, Option<i64>>(8)?
+                        .and_then(|ts| DateTime::from_timestamp(ts, 0))
+                        .unwrap_or_else(|| Utc::now()),
+                })
+            })?;
+            
+            let mut results = Vec::new();
+            for row in rows {
+                results.push(row?);
+            }
+            return Ok(results);
+        }
+        
+        // For non-empty queries, apply search filters with limit
+        let search_query = format!("%{}%", query.to_lowercase());
         let mut stmt = conn.prepare(r#"
             SELECT series_id, dataset_id, dataset_name, theme, description, 
                    tags_text, record_count, first_timestamp, last_timestamp
@@ -440,6 +459,128 @@ impl Database {
         let mut results = Vec::new();
         for row in rows {
             results.push(row?);
+        }
+        
+        Ok(results)
+    }
+    
+    /// Get dataset info (total_series, total_records) by dataset_id
+    pub fn get_dataset_info(&self, dataset_id: &str) -> Result<(i64, i64)> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT total_series, total_records FROM datasets WHERE dataset_id = ?")?;
+        
+        let result = stmt.query_row(duckdb::params![dataset_id], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        
+        Ok(result)
+    }
+    
+    /// Get all series for a specific dataset by querying series_metadata directly
+    /// This avoids the fake dataset entries in the search_index view
+    pub fn get_series_for_dataset(&self, dataset_id: &str, limit: Option<usize>) -> Result<Vec<SearchResult>> {
+        use tracing::{info, error, debug};
+        
+        info!("🔍 get_series_for_dataset called with dataset_id: '{}', limit: {:?}", dataset_id, limit);
+        
+        let conn = self.conn.lock().unwrap();
+        
+        let query = if let Some(limit) = limit {
+            format!(r#"
+                SELECT sm.series_id, sm.dataset_id, d.name as dataset_name, 
+                       sm.theme, sm.description, sm.tags as tags_text, 
+                       CASE 
+                           WHEN sm.record_count > 0 THEN sm.record_count
+                           WHEN d.total_series > 0 THEN d.total_records / d.total_series
+                           ELSE 0
+                       END as record_count, 
+                       sm.first_timestamp, sm.last_timestamp
+                FROM series_metadata sm
+                LEFT JOIN datasets d ON sm.dataset_id = d.dataset_id
+                WHERE sm.dataset_id = ?
+                ORDER BY sm.series_id
+                LIMIT {}
+            "#, limit)
+        } else {
+            r#"
+                SELECT sm.series_id, sm.dataset_id, d.name as dataset_name, 
+                       sm.theme, sm.description, sm.tags as tags_text, 
+                       CASE 
+                           WHEN sm.record_count > 0 THEN sm.record_count
+                           WHEN d.total_series > 0 THEN d.total_records / d.total_series
+                           ELSE 0
+                       END as record_count, 
+                       sm.first_timestamp, sm.last_timestamp
+                FROM series_metadata sm
+                LEFT JOIN datasets d ON sm.dataset_id = d.dataset_id
+                WHERE sm.dataset_id = ?
+                ORDER BY sm.series_id
+            "#.to_string()
+        };
+        
+        debug!("📝 Executing query: {}", query);
+        debug!("🎯 Query parameter: dataset_id = '{}'", dataset_id);
+        
+        let mut stmt = match conn.prepare(&query) {
+            Ok(stmt) => {
+                debug!("✅ Query prepared successfully");
+                stmt
+            },
+            Err(e) => {
+                error!("❌ Failed to prepare query: {}", e);
+                return Err(e.into());
+            }
+        };
+        
+        let rows = match stmt.query_map([dataset_id], |row| {
+            Ok(SearchResult {
+                series_id: row.get(0)?,
+                dataset_id: row.get(1)?,
+                dataset_name: row.get(2)?,
+                theme: row.get(3)?,
+                description: row.get(4)?,
+                tags_text: row.get(5)?,
+                record_count: row.get(6)?,
+                first_timestamp: row.get::<_, Option<i64>>(7)?
+                    .and_then(|ts| DateTime::from_timestamp(ts, 0))
+                    .unwrap_or_else(|| Utc::now()),
+                last_timestamp: row.get::<_, Option<i64>>(8)?
+                    .and_then(|ts| DateTime::from_timestamp(ts, 0))
+                    .unwrap_or_else(|| Utc::now()),
+            })
+        }) {
+            Ok(rows) => {
+                debug!("✅ Query executed successfully");
+                rows
+            },
+            Err(e) => {
+                error!("❌ Failed to execute query: {}", e);
+                return Err(e.into());
+            }
+        };
+        
+        let mut results = Vec::new();
+        let mut row_count = 0;
+        for row in rows {
+            match row {
+                Ok(search_result) => {
+                    results.push(search_result);
+                    row_count += 1;
+                    if row_count <= 3 {
+                        debug!("📊 Row {}: series_id = '{}'", row_count, results.last().unwrap().series_id);
+                    }
+                },
+                Err(e) => {
+                    error!("❌ Error processing row {}: {}", row_count + 1, e);
+                    return Err(e.into());
+                }
+            }
+        }
+        
+        info!("✅ get_series_for_dataset completed: found {} series for dataset '{}'", results.len(), dataset_id);
+        
+        if results.is_empty() {
+            error!("⚠️  No series found for dataset '{}' - this might indicate a data issue", dataset_id);
         }
         
         Ok(results)
@@ -1429,6 +1570,120 @@ impl Database {
             ));
         }
         Ok(final_data)
+    }
+    
+    /// Find datasets where all or most series have record_count = 0
+    pub fn find_datasets_with_zero_record_counts(&self) -> Result<Vec<(String, i64, i64)>> {
+        use tracing::{info, debug};
+        
+        info!("🔍 Finding datasets with record_count = 0 issues...");
+        
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(r#"
+            SELECT 
+                sm.dataset_id,
+                COUNT(*) as total_series,
+                COUNT(CASE WHEN sm.record_count = 0 THEN 1 END) as zero_count_series
+            FROM series_metadata sm
+            GROUP BY sm.dataset_id
+            HAVING zero_count_series > 0
+            ORDER BY zero_count_series DESC, total_series DESC
+        "#)?;
+        
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })?;
+        
+        let mut results = Vec::new();
+        for row in rows {
+            let (dataset_id, total_series, zero_count) = row?;
+            debug!("Dataset '{}': {}/{} series have record_count = 0", dataset_id, zero_count, total_series);
+            results.push((dataset_id, total_series, zero_count));
+        }
+        
+        info!("Found {} datasets with record_count = 0 issues", results.len());
+        Ok(results)
+    }
+    
+    /// Update series record counts using dataset totals for a specific dataset
+    pub fn update_series_record_counts_from_dataset_totals(&self, dataset_id: &str) -> Result<usize> {
+        use tracing::{info, warn, debug};
+        
+        info!("🔧 Repairing record counts for dataset: '{}'", dataset_id);
+        
+        // First, get dataset information
+        let (total_series, total_records) = self.get_dataset_info(dataset_id)?;
+        
+        if total_series == 0 {
+            warn!("Dataset '{}' has total_series = 0, cannot calculate expected record count", dataset_id);
+            return Ok(0);
+        }
+        
+        let expected_records_per_series = total_records / total_series;
+        info!("Expected records per series: {} (total_records: {}, total_series: {})", 
+              expected_records_per_series, total_records, total_series);
+        
+        // Update all series with record_count = 0 for this dataset
+        let conn = self.conn.lock().unwrap();
+        let updated_count = conn.execute(
+            r#"UPDATE series_metadata 
+               SET record_count = ?
+               WHERE dataset_id = ? AND record_count = 0"#,
+            duckdb::params![expected_records_per_series, dataset_id],
+        )?;
+        
+        info!("✅ Updated {} series record counts for dataset '{}' (set to {} records each)", 
+              updated_count, dataset_id, expected_records_per_series);
+        
+        Ok(updated_count)
+    }
+    
+    /// Repair record counts for all datasets with zero record count issues
+    pub fn repair_all_series_record_counts(&self) -> Result<(usize, usize)> {
+        use tracing::{info, warn};
+        
+        info!("🔧 Starting bulk repair of series record counts...");
+        
+        let datasets_with_issues = self.find_datasets_with_zero_record_counts()?;
+        let mut total_datasets_fixed = 0;
+        let mut total_series_fixed = 0;
+        
+        for (dataset_id, total_series, zero_count) in datasets_with_issues {
+            info!("Repairing dataset '{}': {}/{} series need fixing", dataset_id, zero_count, total_series);
+            
+            match self.update_series_record_counts_from_dataset_totals(&dataset_id) {
+                Ok(series_updated) => {
+                    total_datasets_fixed += 1;
+                    total_series_fixed += series_updated;
+                    info!("✅ Fixed {} series in dataset '{}'", series_updated, dataset_id);
+                }
+                Err(e) => {
+                    warn!("❌ Failed to fix dataset '{}': {}", dataset_id, e);
+                }
+            }
+        }
+        
+        info!("🎉 Repair completed: {} datasets fixed, {} series updated", 
+              total_datasets_fixed, total_series_fixed);
+        
+        Ok((total_datasets_fixed, total_series_fixed))
+    }
+
+    /// Get dataset progress details (stub implementation)
+    pub fn get_dataset_progress_details(&self) -> Result<Vec<(String, i64, i64)>> {
+        // Stub implementation - returns empty vec for now
+        Ok(vec![])
+    }
+
+    /// Get sample data from a dataset (stub implementation)
+    pub fn get_sample_data(&self, dataset_id: &str, limit: usize) -> Result<Vec<serde_json::Value>> {
+        // Stub implementation - returns empty vec for now
+        let _ = (dataset_id, limit); // Suppress unused parameter warnings
+        Ok(vec![])
     }
 }
 
