@@ -324,7 +324,7 @@ impl InteractiveFinder {
             }
         };
         
-        // Group results by dataset
+        // Group results by dataset, filtering out dataset-level pseudo-entries
         self.dataset_groups.clear();
         for result in search_summary.results {
             let dataset_name = result.search_result.dataset_name
@@ -339,8 +339,13 @@ impl InteractiveFinder {
                 }
             });
             
-            group.total_records += result.search_result.record_count;
-            group.series.push(result);
+            // Only include actual series (not dataset-level pseudo-entries)
+            // Dataset-level entries have series_id == dataset_id
+            if result.search_result.series_id != result.search_result.dataset_id {
+                group.series.push(result.clone());
+                // Only count records from actual series, not dataset-level entries
+                group.total_records += result.search_result.record_count;
+            }
         }
         
         // Update dataset list for display
