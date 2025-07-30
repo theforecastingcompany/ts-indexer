@@ -497,31 +497,89 @@ impl Indexer {
         // Download and parse metadata
         let metadata = self.s3_client.download_and_parse_metadata(metadata_key).await?;
         
-        // Find the correct case-sensitive directory name for this dataset using pre-computed mapping
-        let dataset_name = &metadata.name;
-        let actual_dir_name = match self.s3_client.find_dataset_dir_from_mapping(dataset_name, directory_mapping) {
+        // CRITICAL BUG FIX: Extract dataset name from metadata key for validation (ensure consistency)
+        let metadata_dataset_name = self.extract_dataset_name_from_metadata_key(metadata_key);
+        let metadata_name = &metadata.name;
+        
+        // Ensure metadata and dataset names are consistent
+        if metadata_dataset_name.to_lowercase() != metadata_name.to_lowercase() {
+            warn!("⚠️  Dataset name mismatch: metadata_key='{}' -> '{}', but metadata.name='{}'", 
+                  metadata_key, metadata_dataset_name, metadata_name);
+            warn!("⚠️  Using metadata_key-derived name for directory lookup to prevent cross-dataset contamination");
+        }
+        
+        // Use the metadata key-derived name for directory lookup (more reliable)
+        let lookup_name = &metadata_dataset_name;
+        let actual_dir_name = match self.s3_client.find_dataset_dir_from_mapping(lookup_name, directory_mapping) {
             Some(dir_name) => {
-                debug!("✅ Mapped dataset '{}' -> directory '{}'", dataset_name, dir_name);
+                info!("✅ SAFE MAPPING: metadata_key='{}' -> dataset='{}' -> directory='{}'", 
+                      metadata_key, lookup_name, dir_name);
                 dir_name
             },
             None => {
-                warn!("No data directory found for dataset: {} in pre-computed mapping (skipping)", dataset_name);
-                debug!("Available directories in mapping: {:?}", directory_mapping.keys().collect::<Vec<_>>());
-                return Err(anyhow::anyhow!("No data directory found for dataset: {}", dataset_name));
+                // Try fallback with metadata.name if different
+                if lookup_name != metadata_name {
+                    warn!("Retrying with metadata.name: '{}'", metadata_name);
+                    match self.s3_client.find_dataset_dir_from_mapping(metadata_name, directory_mapping) {
+                        Some(dir_name) => {
+                            warn!("✅ FALLBACK MAPPING: metadata.name='{}' -> directory='{}'", metadata_name, dir_name);
+                            dir_name
+                        },
+                        None => {
+                            error!("❌ NO MAPPING FOUND for dataset: '{}' (from key '{}') or metadata.name: '{}'", 
+                                   lookup_name, metadata_key, metadata_name);
+                            debug!("Available directories in mapping: {:?}", directory_mapping.keys().collect::<Vec<_>>());
+                            return Err(anyhow::anyhow!("No data directory found for dataset: {} or {}", lookup_name, metadata_name));
+                        }
+                    }
+                } else {
+                    error!("❌ NO MAPPING FOUND for dataset: '{}' (from key '{}')", lookup_name, metadata_key);
+                    debug!("Available directories in mapping: {:?}", directory_mapping.keys().collect::<Vec<_>>());
+                    return Err(anyhow::anyhow!("No data directory found for dataset: {}", lookup_name));
+                }
             }
         };
         
         // List data files for this dataset using the correct case-sensitive directory name
         let dataset_data_prefix = format!("{}{}/", data_prefix, actual_dir_name);
+        info!("🔍 Looking for data files in: {} (for metadata: {})", dataset_data_prefix, metadata_key);
+        
         let data_objects = self.s3_client.list_objects(&dataset_data_prefix, None).await.unwrap_or_default();
         let data_files = self.s3_client.filter_data_files(&data_objects);
         
-        info!("Found {} data files for dataset: {} (directory: {})", data_files.len(), dataset_name, actual_dir_name);
+        // CRITICAL VALIDATION: Ensure data files match the expected dataset
+        if !data_files.is_empty() {
+            let sample_file = &data_files[0].key;
+            if !sample_file.contains(&actual_dir_name) {
+                error!("🚨 CRITICAL BUG DETECTED: Data file '{}' does not match expected directory '{}'", 
+                       sample_file, actual_dir_name);
+                error!("🚨 This indicates cross-dataset contamination during parallel processing!");
+                return Err(anyhow::anyhow!("Data integrity violation: file '{}' in wrong dataset context", sample_file));
+            }
+        }
+        
+        info!("Found {} data files for dataset: {} (directory: {})", data_files.len(), lookup_name, actual_dir_name);
         
         // Compute precise statistics by analyzing parquet files
-        let stats = self.s3_client.analyze_dataset_statistics(&data_files, &metadata).await
-            .unwrap_or_else(|e| {
-                warn!("Failed to compute precise statistics for {}: {}. Using estimates.", dataset_name, e);
+        let stats = match self.s3_client.analyze_dataset_statistics(&data_files, &metadata).await {
+            Ok(stats) => {
+                info!("✅ Successfully computed precise statistics for {}: {} series, {} records", 
+                      lookup_name, stats.unique_series_count, stats.total_records);
+                debug!("Individual series count: {}", stats.individual_series.len());
+                
+                // Validate individual series info
+                if stats.individual_series.is_empty() && stats.unique_series_count > 0 {
+                    error!("⚠️  WARNING: No individual series info computed despite {} unique series", 
+                           stats.unique_series_count);
+                }
+                
+                stats
+            },
+            Err(e) => {
+                error!("❌ CRITICAL: Failed to compute precise statistics for {}: {}", lookup_name, e);
+                error!("❌ This will result in record_count=0 for all series in this dataset!");
+                error!("❌ Falling back to estimates which will NOT provide individual series data");
+                
                 crate::s3::SeriesStatistics {
                     unique_series_count: data_files.len() as i64,
                     total_records: data_files.len() as i64 * 1000,
@@ -529,9 +587,10 @@ impl Indexer {
                     min_series_length: 1000,
                     max_series_length: 1000,
                     series_id_columns: vec!["item_id".to_string()],
-                    individual_series: vec![], // No individual series info available
+                    individual_series: vec![], // No individual series info available - THIS CAUSES THE BUG
                 }
-            });
+            }
+        };
         
         // Create dataset record from metadata and computed statistics
         let dataset = Dataset {
@@ -546,6 +605,10 @@ impl Indexer {
             storage_location: metadata.storage_location.clone(),
             item_id_type: metadata.item_id.as_ref().map(|f| f.field_type.clone()),
             target_type: metadata.target.as_ref().map(|f| f.field_type.clone()),
+            targets: metadata.targets.as_ref()
+                .and_then(|targets| serde_json::to_string(targets).ok()),
+            covariates: metadata.covariates.as_ref()
+                .and_then(|covariates| serde_json::to_string(covariates).ok()),
             tfc_features: metadata.tfc_data_store_features.as_ref()
                 .and_then(|features| serde_json::to_string(features).ok()),
             total_series: stats.unique_series_count,

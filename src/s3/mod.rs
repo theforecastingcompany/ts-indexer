@@ -51,7 +51,8 @@ pub struct DatasetMetadata {
     pub source: Option<String>,
     pub storage_location: Option<String>,
     pub item_id: Option<FieldInfo>,
-    pub target: Option<FieldInfo>,
+    pub target: Option<FieldInfo>, // Keep for backward compatibility
+    pub targets: Option<Vec<NamedFieldInfo>>, // NEW: Support multiple targets
     pub covariates: Option<Covariates>,
     pub tfc_data_store_features: Option<HashMap<String, FieldInfo>>,
     pub ts_id: Option<Vec<TsIdField>>,
@@ -71,11 +72,17 @@ pub struct FieldInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NamedFieldInfo {
+    pub name: String,
+    pub field_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Covariates {
-    pub hist: Vec<String>,
-    pub future: Vec<String>,
+    pub hist: Vec<NamedFieldInfo>, // Changed to store detailed field info with names
+    pub future: Vec<NamedFieldInfo>, // Changed to store detailed field info with names
     #[serde(rename = "static")]
-    pub static_vars: Vec<String>,
+    pub static_vars: Vec<NamedFieldInfo>, // Changed to store detailed field info with names
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -389,10 +396,70 @@ impl S3Client {
             .and_then(|t| t.as_str())
             .map(|s| FieldInfo { field_type: s.to_string() });
         
+        // Extract single target (backward compatibility)
         let target = metadata.get("target")
             .and_then(|f| f.get("type"))
             .and_then(|t| t.as_str())
             .map(|s| FieldInfo { field_type: s.to_string() });
+
+        // Extract multiple targets array (NEW FORMAT)
+        let targets = metadata.get("targets")
+            .and_then(|t| t.as_sequence())
+            .map(|seq| {
+                seq.iter()
+                    .filter_map(|item| {
+                        let name = item.get("name")?.as_str()?.to_string();
+                        let field_type = item.get("type")?.as_str()?.to_string();
+                        Some(NamedFieldInfo { name, field_type })
+                    })
+                    .collect::<Vec<NamedFieldInfo>>()
+            });
+
+        // Extract covariates with detailed field information  
+        let covariates = metadata.get("covariates")
+            .and_then(|c| c.as_mapping())
+            .map(|cov_map| {
+                let hist = cov_map.get("hist")
+                    .and_then(|h| h.as_sequence())
+                    .map(|seq| {
+                        seq.iter()
+                            .filter_map(|item| {
+                                let name = item.get("name")?.as_str()?.to_string();
+                                let field_type = item.get("type")?.as_str()?.to_string();
+                                Some(NamedFieldInfo { name, field_type })
+                            })
+                            .collect::<Vec<NamedFieldInfo>>()
+                    })
+                    .unwrap_or(Vec::new());
+
+                let future = cov_map.get("future")
+                    .and_then(|f| f.as_sequence())
+                    .map(|seq| {
+                        seq.iter()
+                            .filter_map(|item| {
+                                let name = item.get("name")?.as_str()?.to_string();
+                                let field_type = item.get("type")?.as_str()?.to_string();
+                                Some(NamedFieldInfo { name, field_type })
+                            })
+                            .collect::<Vec<NamedFieldInfo>>()
+                    })
+                    .unwrap_or(Vec::new());
+
+                let static_vars = cov_map.get("static")
+                    .and_then(|s| s.as_sequence())
+                    .map(|seq| {
+                        seq.iter()
+                            .filter_map(|item| {
+                                let name = item.get("name")?.as_str()?.to_string();
+                                let field_type = item.get("type")?.as_str()?.to_string();
+                                Some(NamedFieldInfo { name, field_type })
+                            })
+                            .collect::<Vec<NamedFieldInfo>>()
+                    })
+                    .unwrap_or(Vec::new());
+
+                Covariates { hist, future, static_vars }
+            });
         
         // Extract TFC features from both old and new schema formats
         let tfc_features = metadata.get("tfc_data_store_features")
@@ -450,7 +517,8 @@ impl S3Client {
             storage_location,
             item_id,
             target,
-            covariates: None, // TODO: Parse covariates if needed
+            targets,
+            covariates,
             tfc_data_store_features: tfc_features,
             ts_id,
         })
@@ -948,83 +1016,110 @@ impl S3Client {
             ));
         }
         
-        // Monitor unique series identification
-        let unique_metrics = monitor.start_operation("series_unique_analysis".to_string());
-        let unique_series: Vec<String> = if valid_series_cols.len() == 1 {
-            df.column(&valid_series_cols[0])?
-                .unique()?
-                .iter()
-                .map(|v| v.to_string())
-                .collect()
-        } else {
-            // For multiple columns, create composite keys
-            let grouped = df.group_by(&valid_series_cols)?.count()?;
-            let mut unique_series = Vec::new();
-            
-            for i in 0..grouped.height() {
-                let mut key_parts = Vec::new();
-                for col in &valid_series_cols {
-                    let value = grouped.column(col)?.get(i)?;
-                    key_parts.push(value.to_string());
-                }
-                unique_series.push(key_parts.join("|"));
-            }
-            unique_series
-        };
-        monitor.finish_operation(unique_metrics);
+        // Monitor combined series analysis (unique identification + length calculation together)
+        let analysis_metrics = monitor.start_operation("series_analysis_combined".to_string());
         
-        // Monitor series length calculation
-        let length_metrics = monitor.start_operation("series_length_calculation".to_string());
+        // Perform groupby once to get both unique series and their counts
         let series_counts_df = if valid_series_cols.len() == 1 {
             df.group_by([&valid_series_cols[0]])?.count()?
         } else {
             df.group_by(&valid_series_cols)?.count()?
         };
-        monitor.finish_operation(length_metrics);
         
-        // Get the count column (polars can name it "len", "count", or other variations)
-        let available_count_cols = series_counts_df.get_column_names();
-        debug!("Available columns in count DataFrame: {:?}", available_count_cols);
-        
-        let count_col_name = available_count_cols
-            .iter()
-            .find(|name| {
-                let name_lower = name.to_lowercase();
-                name_lower.contains("len") || name_lower.contains("count") || 
-                name_lower == "n" || name_lower == "size" || **name == "len"
-            })
-            .copied()
-            .unwrap_or_else(|| {
-                // Fallback: use the last column (usually the count in groupby results)
-                available_count_cols.last().copied().unwrap_or("len")
-            });
+        // Extract unique series IDs and their corresponding counts in the same order
+        let (unique_series, series_lengths): (Vec<String>, Vec<i64>) = if valid_series_cols.len() == 1 {
+            let series_col = series_counts_df.column(&valid_series_cols[0])?;
+            let count_col_name = series_counts_df.get_column_names()
+                .iter()
+                .find(|name| {
+                    let name_lower = name.to_lowercase();
+                    name_lower.contains("len") || name_lower.contains("count") || 
+                    name_lower == "n" || name_lower == "size" || **name == "len"
+                })
+                .copied()
+                .unwrap_or_else(|| {
+                    series_counts_df.get_column_names().last().copied().unwrap_or("len")
+                });
             
-        debug!("Using count column: '{}'", count_col_name);
-        
-        // Monitor data type conversion and final statistics
-        let conversion_metrics = monitor.start_operation("series_stats_conversion".to_string());
-        
-        // Handle different data types for count column
-        let count_column = series_counts_df.column(count_col_name)?;
-        let series_lengths: Vec<i64> = match count_column.dtype() {
-            DataType::UInt32 => count_column.u32()?.into_no_null_iter().map(|v| v as i64).collect(),
-            DataType::UInt64 => count_column.u64()?.into_no_null_iter().map(|v| v as i64).collect(),
-            DataType::Int32 => count_column.i32()?.into_no_null_iter().map(|v| v as i64).collect(),
-            DataType::Int64 => count_column.i64()?.into_no_null_iter().collect(),
-            _ => {
-                // Try to cast to i64
-                count_column.cast(&DataType::Int64)?
-                    .i64()?
-                    .into_no_null_iter()
-                    .collect()
+            let count_col = series_counts_df.column(count_col_name)?;
+            
+            let series_ids: Vec<String> = series_col.iter().map(|v| v.to_string()).collect();
+            let counts: Vec<i64> = match count_col.dtype() {
+                DataType::UInt32 => count_col.u32()?.into_no_null_iter().map(|v| v as i64).collect(),
+                DataType::UInt64 => count_col.u64()?.into_no_null_iter().map(|v| v as i64).collect(),
+                DataType::Int32 => count_col.i32()?.into_no_null_iter().map(|v| v as i64).collect(),
+                DataType::Int64 => count_col.i64()?.into_no_null_iter().collect(),
+                _ => count_col.cast(&DataType::Int64)?.i64()?.into_no_null_iter().collect(),
+            };
+            
+            (series_ids, counts)
+        } else {
+            // For multiple columns, create composite keys and extract counts
+            let mut series_ids = Vec::new();
+            let mut counts = Vec::new();
+            
+            let count_col_name = series_counts_df.get_column_names()
+                .iter()
+                .find(|name| {
+                    let name_lower = name.to_lowercase();
+                    name_lower.contains("len") || name_lower.contains("count") || 
+                    name_lower == "n" || name_lower == "size" || **name == "len"
+                })
+                .copied()
+                .unwrap_or_else(|| {
+                    series_counts_df.get_column_names().last().copied().unwrap_or("len")
+                });
+            
+            let count_col = series_counts_df.column(count_col_name)?;
+            let count_values: Vec<i64> = match count_col.dtype() {
+                DataType::UInt32 => count_col.u32()?.into_no_null_iter().map(|v| v as i64).collect(),
+                DataType::UInt64 => count_col.u64()?.into_no_null_iter().map(|v| v as i64).collect(),
+                DataType::Int32 => count_col.i32()?.into_no_null_iter().map(|v| v as i64).collect(),
+                DataType::Int64 => count_col.i64()?.into_no_null_iter().collect(),
+                _ => count_col.cast(&DataType::Int64)?.i64()?.into_no_null_iter().collect(),
+            };
+            
+            for i in 0..series_counts_df.height() {
+                let mut key_parts = Vec::new();
+                for col in &valid_series_cols {
+                    let value = series_counts_df.column(col)?.get(i)?;
+                    key_parts.push(value.to_string());
+                }
+                series_ids.push(key_parts.join("|"));
+                counts.push(count_values[i]);
             }
+            
+            (series_ids, counts)
         };
+        
+        monitor.finish_operation(analysis_metrics);
+        
+        // Debug: Verify alignment and show results
+        debug!("Series analysis results:");
+        debug!("  Unique series count: {}", unique_series.len());
+        debug!("  Series lengths count: {}", series_lengths.len());
+        
+        // Ensure alignment 
+        if unique_series.len() != series_lengths.len() {
+            return Err(anyhow::anyhow!(
+                "CRITICAL BUG: Series IDs and lengths are misaligned! {} series vs {} lengths",
+                unique_series.len(), series_lengths.len()
+            ));
+        }
+        
+        // Show sample mapping for verification
+        if !unique_series.is_empty() {
+            let sample_count = std::cmp::min(5, unique_series.len());
+            debug!("Sample series -> record count mappings:");
+            for i in 0..sample_count {
+                debug!("  '{}' -> {} records", unique_series[i], series_lengths[i]);
+            }
+        }
         
         let total_records = df.height() as i64;
         
         monitor.log_milestone("file_analysis", "complete", 
             &format!("series={}, records={}, cols_read={}", unique_series.len(), total_records, valid_required_cols.len()));
-        monitor.finish_operation(conversion_metrics);
         
         Ok(FileAnalysisResult {
             unique_series,

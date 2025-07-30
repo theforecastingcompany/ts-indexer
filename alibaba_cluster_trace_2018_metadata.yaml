@@ -1,0 +1,52 @@
+name: alibaba_cluster_trace_2018
+ts_id:
+  - name: item_id
+    type: str
+    subtype: str
+targets:
+  - name: cpu_utilization_percent
+    type: num
+    subtype: float
+  - name: memory_utilization_percent
+    type: num
+    subtype: float
+covariates:
+  hist:
+    - name: cpi
+      type: num
+      subtype: float
+    - name: mem_gps
+      type: num
+      subtype: float
+    - name: mpki
+      type: num
+      subtype: float
+    - name: net_in
+      type: num
+      subtype: float
+    - name: net_out
+      type: num
+      subtype: float
+    - name: disk_io_percent
+      type: num
+      subtype: float
+  future: []
+tfc_data_store:
+  future:
+    - name: day_of_week
+      type: numeric
+      subtype: int
+    - name: week_of_year
+      type: numeric
+      subtype: int
+    - name: month_of_year
+      type: numeric
+      subtype: int
+    - name: day_of_month
+      type: numeric
+      subtype: int
+type: public
+description: a collection from a cluster of around 4000 machines over 8 days
+source: lotsa
+storage_location: 
+  s3://tfc-modeling-data-eu-west-3/lotsa_long_format/alibaba_cluster_trace_2018

@@ -6,11 +6,13 @@ use tracing_subscriber::{self, EnvFilter};
 mod cli;
 mod db;
 mod indexer;
+mod monitoring;
+mod plotting;
 mod progress;
 mod s3;
 mod search;
 
-use cli::commands::{CleanCommand, IndexCommand, SearchCommand, StatusCommand};
+use cli::commands::{AnalyzeSizesCommand, CleanCommand, IndexCommand, RepairCommand, SearchCommand, StatusCommand};
 
 #[derive(Parser)]
 #[command(name = "ts-indexer")]
@@ -35,11 +37,21 @@ enum Commands {
     Status(StatusCommand),
     /// Clean and reinitialize all states (database + progress files)
     Clean(CleanCommand),
+    /// Analyze file sizes in S3 bucket to understand performance characteristics
+    AnalyzeSizes(AnalyzeSizesCommand),
+    /// Repair database inconsistencies (e.g., fix series record counts)
+    Repair(RepairCommand),
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    
+    // Cap Polars threads to prevent CPU thrashing on large files
+    // Based on monitoring data showing 800%+ CPU usage
+    let max_polars_threads = std::cmp::min(4, num_cpus::get());
+    std::env::set_var("POLARS_MAX_THREADS", max_polars_threads.to_string());
+    info!("🧵 Limited Polars to {} threads to prevent CPU thrashing", max_polars_threads);
     
     // Initialize logging with filtered levels
     let base_level = if cli.verbose { Level::DEBUG } else { Level::INFO };
@@ -65,5 +77,7 @@ async fn main() -> Result<()> {
         Commands::Search(cmd) => cmd.execute().await,
         Commands::Status(cmd) => cmd.execute().await,
         Commands::Clean(cmd) => cmd.execute().await,
+        Commands::AnalyzeSizes(cmd) => cmd.execute().await,
+        Commands::Repair(cmd) => cmd.execute().await,
     }
 }

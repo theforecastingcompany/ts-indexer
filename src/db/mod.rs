@@ -236,7 +236,11 @@ impl Database {
                 sm.source_file,
                 sm.first_timestamp,
                 sm.last_timestamp,
-                sm.record_count
+                CASE 
+                    WHEN sm.record_count > 0 THEN sm.record_count
+                    WHEN d.total_series > 0 THEN d.total_records / d.total_series
+                    ELSE 0
+                END as record_count
             FROM series_metadata sm
             LEFT JOIN datasets d ON sm.dataset_id = d.dataset_id;
         "#)?;

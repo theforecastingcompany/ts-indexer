@@ -1,0 +1,12 @@
+[project]
+name = "ts-indexer"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.11"
+dependencies = [
+    "boto3>=1.39.14",
+    "pandas>=2.3.1",
+    "polars>=1.31.0",
+    "pyarrow>=21.0.0",
+    "pyyaml>=6.0.2",
+]

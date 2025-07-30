@@ -1,0 +1,219 @@
+🎯 Interactive finder started at 2025-07-30 00:22:56 UTC - all logs redirected to ts_indexer_interactive.log
+🎯 Interactive finder started at 2025-07-30 00:25:34 UTC - all logs redirected to ts_indexer_interactive.log
+DEBUG: Logging setup complete, stderr and stdout redirected to log file
+[2m2025-07-30T00:25:34.448619Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: ''
+[2m2025-07-30T00:25:34.468784Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 1000 results in 19ms
+[2m2025-07-30T00:25:34.469241Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 93 datasets with 1000 total series
+[2m2025-07-30T00:25:36.335305Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: 'b'
+[2m2025-07-30T00:25:36.387680Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 1000 results in 52ms
+[2m2025-07-30T00:25:36.388228Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 6 datasets with 1000 total series
+[2m2025-07-30T00:25:37.060777Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: 'be'
+[2m2025-07-30T00:25:37.101987Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 389 results in 41ms
+[2m2025-07-30T00:25:37.102310Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 5 datasets with 389 total series
+[2m2025-07-30T00:25:38.799691Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: 'beijing'
+[2m2025-07-30T00:25:38.833580Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 277 results in 33ms
+[2m2025-07-30T00:25:38.833829Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 1 datasets with 277 total series
+[2m2025-07-30T00:25:41.393441Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: 'beijin'
+[2m2025-07-30T00:25:41.434482Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 277 results in 40ms
+[2m2025-07-30T00:25:41.434672Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 1 datasets with 277 total series
+[2m2025-07-30T00:25:41.624645Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: 'beiji'
+[2m2025-07-30T00:25:41.662339Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 277 results in 37ms
+[2m2025-07-30T00:25:41.662524Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 1 datasets with 277 total series
+[2m2025-07-30T00:25:42.278205Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: 'beij'
+[2m2025-07-30T00:25:42.319193Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 277 results in 40ms
+[2m2025-07-30T00:25:42.319370Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 1 datasets with 277 total series
+[2m2025-07-30T00:25:42.826342Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: 'bei'
+[2m2025-07-30T00:25:42.866756Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 277 results in 40ms
+[2m2025-07-30T00:25:42.866942Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 1 datasets with 277 total series
+[2m2025-07-30T00:25:43.991467Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: 'be'
+[2m2025-07-30T00:25:44.032622Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 389 results in 41ms
+[2m2025-07-30T00:25:44.032853Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 5 datasets with 389 total series
+[2m2025-07-30T00:25:44.353249Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: 'b'
+[2m2025-07-30T00:25:44.404500Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 1000 results in 50ms
+[2m2025-07-30T00:25:44.405014Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 6 datasets with 1000 total series
+[2m2025-07-30T00:25:45.772738Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: 'be'
+[2m2025-07-30T00:25:45.810305Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 389 results in 37ms
+[2m2025-07-30T00:25:45.810621Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 5 datasets with 389 total series
+[2m2025-07-30T00:25:46.404284Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: 'bear'
+[2m2025-07-30T00:25:46.442405Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 92 results in 38ms
+[2m2025-07-30T00:25:46.442549Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 1 datasets with 92 total series
+[2m2025-07-30T00:25:46.987613Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: 'bea'
+[2m2025-07-30T00:25:47.025224Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 92 results in 37ms
+[2m2025-07-30T00:25:47.025315Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 1 datasets with 92 total series
+[2m2025-07-30T00:25:47.371611Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: 'be'
+[2m2025-07-30T00:25:47.411521Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 389 results in 39ms
+[2m2025-07-30T00:25:47.411720Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 5 datasets with 389 total series
+[2m2025-07-30T00:25:48.215801Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: 'beij'
+[2m2025-07-30T00:25:48.254590Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 277 results in 38ms
+[2m2025-07-30T00:25:48.254793Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 1 datasets with 277 total series
+[2m2025-07-30T00:25:49.161110Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: 'bei'
+[2m2025-07-30T00:25:49.202508Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 277 results in 41ms
+[2m2025-07-30T00:25:49.202692Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 1 datasets with 277 total series
+[2m2025-07-30T00:25:49.431854Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: 'be'
+[2m2025-07-30T00:25:49.474529Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 389 results in 42ms
+[2m2025-07-30T00:25:49.474761Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 5 datasets with 389 total series
+[2m2025-07-30T00:26:14.401322Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m 🏁 Interactive finder session ended
+🎯 Interactive finder started at 2025-07-30 00:28:52 UTC - all logs redirected to ts_indexer_interactive.log
+DEBUG: Logging setup complete, stderr and stdout redirected to log file
+[2m2025-07-30T00:28:52.821194Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: ''
+[2m2025-07-30T00:28:52.839723Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 1000 results in 18ms
+[2m2025-07-30T00:28:52.840144Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 93 datasets with 1000 total series
+[2m2025-07-30T00:30:06.724910Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: 'beijing'
+[2m2025-07-30T00:30:06.760540Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 277 results in 35ms
+[2m2025-07-30T00:30:06.760850Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 1 datasets with 277 total series
+[2m2025-07-30T00:30:10.502788Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: 'beijin'
+[2m2025-07-30T00:30:10.528495Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 277 results in 25ms
+[2m2025-07-30T00:30:10.528654Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 1 datasets with 277 total series
+[2m2025-07-30T00:30:10.706174Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: 'beiji'
+[2m2025-07-30T00:30:10.740093Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 277 results in 33ms
+[2m2025-07-30T00:30:10.740270Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 1 datasets with 277 total series
+[2m2025-07-30T00:30:11.406876Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: 'b'
+[2m2025-07-30T00:30:11.457160Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 1000 results in 50ms
+[2m2025-07-30T00:30:11.457598Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 6 datasets with 1000 total series
+[2m2025-07-30T00:30:11.817228Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: ''
+[2m2025-07-30T00:30:11.848694Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 1000 results in 31ms
+[2m2025-07-30T00:30:11.849321Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 93 datasets with 1000 total series
+[2m2025-07-30T00:32:02.264214Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m 🏁 Interactive finder session ended
+🎯 Interactive finder started at 2025-07-30 00:32:07 UTC - all logs redirected to ts_indexer_interactive.log
+DEBUG: Logging setup complete, stderr and stdout redirected to log file
+[2m2025-07-30T00:32:07.665574Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: ''
+[2m2025-07-30T00:32:07.685386Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 1000 results in 19ms
+[2m2025-07-30T00:32:07.686114Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 93 datasets with 907 total series
+[2m2025-07-30T00:35:28.450006Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m 🏁 Interactive finder session ended
+🎯 Interactive finder started at 2025-07-30 00:38:15 UTC - all logs redirected to ts_indexer_interactive.log
+DEBUG: Logging setup complete, stderr and stdout redirected to log file
+[2m2025-07-30T00:38:15.524872Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: ''
+[2m2025-07-30T00:38:15.545458Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 1000 results in 20ms
+[2m2025-07-30T00:38:15.546159Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 93 datasets with 1000 total series
+[2m2025-07-30T00:38:31.421454Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: ''
+[2m2025-07-30T00:38:31.454630Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 1000 results in 32ms
+[2m2025-07-30T00:38:31.455616Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 93 datasets with 1000 total series
+[2m2025-07-30T00:40:20.981743Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: 'q'
+[2m2025-07-30T00:40:21.019291Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 761 results in 37ms
+[2m2025-07-30T00:40:21.020017Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 4 datasets with 761 total series
+[2m2025-07-30T00:40:21.160434Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m 🏁 Interactive finder session ended
+🎯 Interactive finder started at 2025-07-30 00:46:45 UTC - all logs redirected to ts_indexer_interactive.log
+DEBUG: Logging setup complete, stderr and stdout redirected to log file
+[2m2025-07-30T00:46:45.400881Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: ''
+[2m2025-07-30T00:46:45.422368Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 1000 results in 21ms
+[2m2025-07-30T00:46:45.422952Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 4 datasets with 1000 total series
+[2m2025-07-30T00:51:09.550778Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m 🏁 Interactive finder session ended
+🎯 Interactive finder started at 2025-07-30 00:52:56 UTC - all logs redirected to ts_indexer_interactive.log
+DEBUG: Logging setup complete, stderr and stdout redirected to log file
+[2m2025-07-30T00:52:56.936852Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: ''
+[2m2025-07-30T00:52:56.958393Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 1000 results in 21ms
+[2m2025-07-30T00:52:56.958989Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 4 datasets with 1000 total series
+[2m2025-07-30T00:53:00.470121Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m 🏁 Interactive finder session ended
+🎯 Interactive finder started at 2025-07-30 00:53:05 UTC - all logs redirected to ts_indexer_interactive.log
+DEBUG: Logging setup complete, stderr and stdout redirected to log file
+[2m2025-07-30T00:53:05.768748Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: ''
+[2m2025-07-30T00:53:05.785949Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 1000 results in 16ms
+[2m2025-07-30T00:53:05.786590Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 4 datasets with 1000 total series
+🎯 Interactive finder started at 2025-07-30 00:54:14 UTC - all logs redirected to ts_indexer_interactive.log
+DEBUG: Logging setup complete, stderr and stdout redirected to log file
+🎯 Interactive finder started at 2025-07-30 00:56:48 UTC - all logs redirected to ts_indexer_interactive.log
+DEBUG: Logging setup complete, stderr and stdout redirected to log file
+[2m2025-07-30T00:56:48.322178Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: ''
+[2m2025-07-30T00:56:48.339932Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 1000 results in 17ms
+[2m2025-07-30T00:56:48.340567Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 4 datasets with 1000 total series
+🎯 Interactive finder started at 2025-07-30 00:58:52 UTC - all logs redirected to ts_indexer_interactive.log
+DEBUG: Logging setup complete, stderr and stdout redirected to log file
+[2m2025-07-30T00:58:52.200439Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: ''
+[2m2025-07-30T00:58:52.217324Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 1000 results in 16ms
+[2m2025-07-30T00:58:52.217952Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 4 datasets with 1000 total series
+[2m2025-07-30T00:59:04.335513Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: 'beij'
+[2m2025-07-30T00:59:04.378616Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 276 results in 43ms
+[2m2025-07-30T00:59:04.379007Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 1 datasets with 276 total series
+[2m2025-07-30T00:59:06.304084Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: ''
+[2m2025-07-30T00:59:06.339476Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 1000 results in 35ms
+[2m2025-07-30T00:59:06.340308Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 4 datasets with 1000 total series
+[2m2025-07-30T00:59:08.171751Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: 'beij'
+[2m2025-07-30T00:59:08.210534Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 276 results in 38ms
+[2m2025-07-30T00:59:08.210938Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 1 datasets with 276 total series
+[2m2025-07-30T01:01:19.814402Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m 🏁 Interactive finder session ended
+🎯 Interactive finder started at 2025-07-30 01:05:07 UTC - all logs redirected to ts_indexer_interactive.log
+DEBUG: Logging setup complete, stderr and stdout redirected to log file
+[2m2025-07-30T01:05:07.990429Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: ''
+[2m2025-07-30T01:05:08.212841Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 50000 results in 211ms
+[2m2025-07-30T01:05:08.239993Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 5 datasets with 50000 total series
+[2m2025-07-30T01:05:14.311095Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: 'beij'
+[2m2025-07-30T01:05:14.351690Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 276 results in 40ms
+[2m2025-07-30T01:05:14.359250Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 1 datasets with 276 total series
+[2m2025-07-30T01:05:34.933511Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: ''
+[2m2025-07-30T01:05:35.178388Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 50000 results in 234ms
+[2m2025-07-30T01:05:35.205032Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 5 datasets with 50000 total series
+[2m2025-07-30T01:08:26.899872Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m 🏁 Interactive finder session ended
+🎯 Interactive finder started at 2025-07-30 01:09:57 UTC - all logs redirected to ts_indexer_interactive.log
+DEBUG: Logging setup complete, stderr and stdout redirected to log file
+[2m2025-07-30T01:09:57.640194Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: ''
+[2m2025-07-30T01:10:00.596602Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 500000 results in 2790ms
+[2m2025-07-30T01:10:00.965791Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 32 datasets with 500000 total series
+[2m2025-07-30T01:10:09.189344Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: 'bei'
+[2m2025-07-30T01:10:09.249588Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 276 results in 60ms
+[2m2025-07-30T01:10:09.312866Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 1 datasets with 276 total series
+[2m2025-07-30T01:10:11.406437Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: ''
+[2m2025-07-30T01:10:15.041351Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 500000 results in 3358ms
+[2m2025-07-30T01:10:15.523402Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 43 datasets with 500000 total series
+[2m2025-07-30T01:10:19.431964Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: 'er'
+[2m2025-07-30T01:10:22.985508Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 448642 results in 3456ms
+[2m2025-07-30T01:10:23.371826Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 42 datasets with 448642 total series
+[2m2025-07-30T01:10:23.557381Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: 'era'
+[2m2025-07-30T01:10:26.198269Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 245762 results in 2590ms
+[2m2025-07-30T01:10:26.409060Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 32 datasets with 245762 total series
+[2m2025-07-30T01:10:29.581555Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: 'era5'
+[2m2025-07-30T01:10:32.169769Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 245760 results in 2540ms
+[2m2025-07-30T01:10:32.314870Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 30 datasets with 245760 total series
+🎯 Interactive finder started at 2025-07-30 01:11:40 UTC - all logs redirected to ts_indexer_interactive.log
+DEBUG: Logging setup complete, stderr and stdout redirected to log file
+🎯 Interactive finder started at 2025-07-30 01:11:58 UTC - all logs redirected to ts_indexer_interactive.log
+DEBUG: Logging setup complete, stderr and stdout redirected to log file
+[2m2025-07-30T01:11:58.278097Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: ''
+[2m2025-07-30T01:12:00.168759Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 500000 results in 1783ms
+[2m2025-07-30T01:12:00.427790Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 32 datasets with 500000 total series
+[2m2025-07-30T01:13:34.652063Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: 'q'
+[2m2025-07-30T01:13:34.675327Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 760 results in 23ms
+[2m2025-07-30T01:13:34.743194Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 4 datasets with 760 total series
+[2m2025-07-30T01:13:35.711122Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m 🏁 Interactive finder session ended
+🎯 Interactive finder started at 2025-07-30 01:13:40 UTC - all logs redirected to ts_indexer_interactive.log
+DEBUG: Logging setup complete, stderr and stdout redirected to log file
+[2m2025-07-30T01:13:40.515172Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: ''
+[2m2025-07-30T01:13:42.463430Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 1027829 results in 1723ms
+[2m2025-07-30T01:13:43.010387Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 107 datasets with 1027829 total series
+[2m2025-07-30T01:15:23.220473Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m 🏁 Interactive finder session ended
+🎯 Interactive finder started at 2025-07-30 01:17:36 UTC - all logs redirected to ts_indexer_interactive.log
+DEBUG: Logging setup complete, stderr and stdout redirected to log file
+[2m2025-07-30T01:17:36.706748Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: ''
+[2m2025-07-30T01:17:38.630044Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 1027829 results in 1707ms
+[2m2025-07-30T01:17:39.174151Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 107 datasets with 1027829 total series
+[2m2025-07-30T01:17:54.876472Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: 'c'
+[2m2025-07-30T01:18:01.046850Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 772648 results in 6002ms
+[2m2025-07-30T01:18:01.544851Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 53 datasets with 772648 total series
+[2m2025-07-30T01:18:01.802150Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: 'cmip'
+[2m2025-07-30T01:18:04.157135Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 262336 results in 2305ms
+[2m2025-07-30T01:18:04.344310Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 33 datasets with 262336 total series
+[2m2025-07-30T01:18:33.142766Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: 'cmi'
+[2m2025-07-30T01:18:35.267011Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 262336 results in 2074ms
+[2m2025-07-30T01:18:35.403466Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 33 datasets with 262336 total series
+[2m2025-07-30T01:18:35.576768Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: 'c'
+[2m2025-07-30T01:18:41.718184Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 772648 results in 5974ms
+[2m2025-07-30T01:18:42.122341Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 53 datasets with 772648 total series
+[2m2025-07-30T01:18:42.294873Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: ''
+[2m2025-07-30T01:18:44.238220Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 1027829 results in 1726ms
+[2m2025-07-30T01:18:44.838764Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 107 datasets with 1027829 total series
+[2m2025-07-30T01:19:57.328323Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m 🏁 Interactive finder session ended
+🎯 Interactive finder started at 2025-07-30 01:20:27 UTC - all logs redirected to ts_indexer_interactive.log
+DEBUG: Logging setup complete, stderr and stdout redirected to log file
+🎯 Interactive finder started at 2025-07-30 01:24:58 UTC - all logs redirected to ts_indexer_interactive.log
+DEBUG: Logging setup complete, stderr and stdout redirected to log file
+[2m2025-07-30T01:24:58.009873Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: ''
+[2m2025-07-30T01:24:59.916911Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 1027829 results in 1696ms
+[2m2025-07-30T01:25:00.443284Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 107 datasets with 1027829 total series
+[2m2025-07-30T01:25:03.596326Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: 'beijing'
+[2m2025-07-30T01:25:03.632111Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 276 results in 35ms
+[2m2025-07-30T01:25:03.752921Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 1 datasets with 276 total series
+[2m2025-07-30T01:26:11.831364Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m 🏁 Interactive finder session ended
+🎯 Interactive finder started at 2025-07-30 01:26:37 UTC - all logs redirected to ts_indexer_interactive.log
+DEBUG: Logging setup complete, stderr and stdout redirected to log file
+[2m2025-07-30T01:26:37.163034Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Performing search for: ''
+[2m2025-07-30T01:26:39.080425Z[0m [32m INFO[0m [2mts_indexer::search[0m[2m:[0m Search completed: 1027829 results in 1694ms
+[2m2025-07-30T01:26:39.601493Z[0m [32m INFO[0m [2mts_indexer::cli::interactive[0m[2m:[0m Search updated: 107 datasets with 1027829 total series

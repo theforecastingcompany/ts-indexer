@@ -33,7 +33,7 @@ pub struct DateRange {
     pub end: chrono::DateTime<chrono::Utc>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct EnhancedSearchResult {
     pub search_result: SearchResult,
     pub fuzzy_score: Option<i64>,
