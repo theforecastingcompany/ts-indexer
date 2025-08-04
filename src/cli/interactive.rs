@@ -1346,11 +1346,18 @@ impl InteractiveFinder {
             vec![area].into()
         };
         
-        // Left panel: search input and results
-        let left_chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(3), Constraint::Min(0), Constraint::Length(1)])
-            .split(chunks[0]);
+        // Left panel: search input, totals (if dataset level), results, and status
+        let left_chunks = if self.current_level == ViewLevel::Dataset {
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(3), Constraint::Length(3), Constraint::Min(0), Constraint::Length(1)])
+                .split(chunks[0])
+        } else {
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(3), Constraint::Min(0), Constraint::Length(1)])
+                .split(chunks[0])
+        };
         
         // Search input with level indicator
         let level_name = match self.current_level {
@@ -1408,6 +1415,28 @@ impl InteractiveFinder {
                     .title(input_title)
             );
         f.render_widget(input, left_chunks[0]);
+        
+        // Totals display (only at dataset level)
+        if self.current_level == ViewLevel::Dataset {
+            let total_series: usize = self.dataset_groups.values().map(|g| g.series.len()).sum();
+            let total_records: i64 = self.dataset_groups.values().map(|g| g.total_records).sum();
+            
+            let totals_text = format!(
+                "📊 Total: {} series across {} datasets • {} records",
+                Self::format_number(total_series),
+                Self::format_number(self.dataset_groups.len()),
+                Self::format_number(total_records)
+            );
+            
+            let totals_widget = Paragraph::new(totals_text)
+                .style(Style::default().fg(Color::Cyan))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(Span::styled(" Totals ", Style::default().fg(Color::Blue)))
+                );
+            f.render_widget(totals_widget, left_chunks[1]);
+        }
         
         // Results list based on current level
         let items: Vec<ListItem> = match self.current_level {
@@ -1494,7 +1523,9 @@ impl InteractiveFinder {
             .highlight_style(Style::default().add_modifier(Modifier::BOLD))
             .highlight_symbol("▶ ");
         
-        f.render_stateful_widget(results_list, left_chunks[1], &mut self.list_state);
+        // Render results list at appropriate chunk index
+        let results_chunk_index = if self.current_level == ViewLevel::Dataset { 2 } else { 1 };
+        f.render_stateful_widget(results_list, left_chunks[results_chunk_index], &mut self.list_state);
         
         // Status line with hierarchical navigation help
         let help_text = match self.current_level {
@@ -1510,7 +1541,9 @@ impl InteractiveFinder {
         };
         let status = Paragraph::new(help_text)
             .style(Style::default().bg(Color::DarkGray).fg(Color::White));
-        f.render_widget(status, left_chunks[2]);
+        // Render status at appropriate chunk index (last chunk)
+        let status_chunk_index = if self.current_level == ViewLevel::Dataset { 3 } else { 2 };
+        f.render_widget(status, left_chunks[status_chunk_index]);
         
         // Right panel: preview (if enabled)
         if self.show_preview && chunks.len() > 1 {
