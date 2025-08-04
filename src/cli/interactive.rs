@@ -31,6 +31,13 @@ enum ViewLevel {
     Features,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+enum DatasetSortMode {
+    Name,
+    SeriesCount,
+    RecordCount,
+}
+
 #[derive(Debug, Clone)]
 enum FeatureDataState {
     NeedsFetch,
@@ -89,6 +96,9 @@ pub struct InteractiveFinder {
     current_dataset: Option<String>,
     current_series: Option<String>,
     
+    // Sorting state
+    dataset_sort_mode: DatasetSortMode,
+    
     // Display data for current level
     dataset_list: Vec<String>,
     series_list: Vec<EnhancedSearchResult>,
@@ -100,6 +110,10 @@ pub struct InteractiveFinder {
     feature_data_cache: HashMap<String, Vec<(f64, f64)>>,
     loading_features: HashSet<String>,
     data_fetch_errors: HashMap<String, String>,
+    
+    // Number selection mode
+    number_input_mode: bool,
+    number_input_buffer: String,
     
     // Loading animation state
     loading_spinner_frame: usize,
@@ -149,6 +163,9 @@ impl InteractiveFinder {
             current_dataset: None,
             current_series: None,
             
+            // Initialize sorting state
+            dataset_sort_mode: DatasetSortMode::Name,
+            
             // Initialize display lists
             dataset_list: Vec::new(),
             series_list: Vec::new(),
@@ -160,6 +177,10 @@ impl InteractiveFinder {
             feature_data_cache: HashMap::new(),
             loading_features: HashSet::new(),
             data_fetch_errors: HashMap::new(),
+            
+            // Initialize number selection mode
+            number_input_mode: false,
+            number_input_buffer: String::new(),
             
             // Initialize loading animation
             loading_spinner_frame: 0,
@@ -439,6 +460,18 @@ impl InteractiveFinder {
             Span::raw(format!("{:.1}", y_max))
         ];
         
+        // Split area to show chart and statistics
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(75), Constraint::Percentage(25)])
+            .split(area);
+        
+        // Calculate statistics
+        let original_y_min = y_values.iter().cloned().fold(f64::INFINITY, f64::min);
+        let original_y_max = y_values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let y_avg = y_values.iter().sum::<f64>() / y_values.len() as f64;
+        let data_count = y_values.len();
+        
         // Create and render the chart
         let chart = Chart::new(datasets)
             .block(Block::default()
@@ -463,7 +496,36 @@ impl InteractiveFinder {
                     .bounds([y_min, y_max])
             );
         
-        f.render_widget(chart, area);
+        f.render_widget(chart, chunks[0]);
+        
+        // Render statistics panel
+        let stats_lines = vec![
+            Line::from(vec![
+                Span::styled("📊 Statistics: ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            ]),
+            Line::from(vec![
+                Span::styled("Min: ", Style::default().fg(Color::Cyan)),
+                Span::raw(format!("{:.3}", original_y_min)),
+                Span::styled("  Max: ", Style::default().fg(Color::Cyan)),
+                Span::raw(format!("{:.3}", original_y_max)),
+                Span::styled("  Avg: ", Style::default().fg(Color::Cyan)),
+                Span::raw(format!("{:.3}", y_avg)),
+            ]),
+            Line::from(vec![
+                Span::styled("Data Points: ", Style::default().fg(Color::Cyan)),
+                Span::raw(format!("{}", data_count)),
+                Span::styled("  Range: ", Style::default().fg(Color::Cyan)),
+                Span::raw(format!("{:.3}", original_y_max - original_y_min)),
+            ]),
+        ];
+        
+        let stats_panel = Paragraph::new(Text::from(stats_lines))
+            .block(Block::default()
+                .borders(Borders::ALL)
+                .title(Span::styled(" Statistics ", Style::default().fg(Color::Blue)))
+            );
+        
+        f.render_widget(stats_panel, chunks[1]);
     }
     
     /// Render loading state for chart
@@ -714,14 +776,42 @@ impl InteractiveFinder {
                     if key.kind == KeyEventKind::Press {
                         match key.code {
                         KeyCode::Char(c) => {
-                            self.query.push(c);
-                            needs_update = true;
-                            last_query_change = std::time::Instant::now();
+                            if self.number_input_mode && self.current_level == ViewLevel::Features {
+                                // Number input mode
+                                if c.is_ascii_digit() {
+                                    self.number_input_buffer.push(c);
+                                } else if c == ' ' && !self.number_input_buffer.is_empty() {
+                                    // Space to confirm number selection
+                                    if let Ok(number) = self.number_input_buffer.parse::<usize>() {
+                                        if let Some(feature_index) = self.get_nth_selectable_feature(number.saturating_sub(1)) {
+                                            self.selected_index = feature_index;
+                                            self.list_state.select(Some(self.selected_index));
+                                            
+                                            // Auto-load cached features
+                                            if let Some(feature_name) = self.get_current_feature_name() {
+                                                self.try_auto_load_cached_feature(&feature_name).await;
+                                            }
+                                        }
+                                    }
+                                    self.number_input_buffer.clear();
+                                }
+                            } else {
+                                // Regular query input mode
+                                self.query.push(c);
+                                needs_update = true;
+                                last_query_change = std::time::Instant::now();
+                            }
                         }
                         KeyCode::Backspace => {
-                            self.query.pop();
-                            needs_update = true;
-                            last_query_change = std::time::Instant::now();
+                            if self.number_input_mode && self.current_level == ViewLevel::Features {
+                                // In number input mode, clear the buffer
+                                self.number_input_buffer.pop();
+                            } else {
+                                // Regular search mode
+                                self.query.pop();
+                                needs_update = true;
+                                last_query_change = std::time::Instant::now();
+                            }
                         }
                         KeyCode::Enter => {
                             eprintln!("[DEBUG {}] ⌨️ Enter key pressed at level: {:?}", chrono::Utc::now().format("%H:%M:%S"), self.current_level);
@@ -826,27 +916,28 @@ impl InteractiveFinder {
                             }
                         }
                         KeyCode::Tab => {
-                            // TODO: Multi-select mode - for now, same as Enter
-                            match self.current_level {
-                                ViewLevel::Dataset => {
-                                    if !self.dataset_list.is_empty() {
-                                        self.enter_dataset().await?;
-                                    }
-                                }
-                                ViewLevel::Series => {
-                                    if !self.series_list.is_empty() {
-                                        self.enter_series().await?;
-                                    }
-                                }
-                                ViewLevel::Features => {
-                                    if let Some(series_id) = &self.current_series {
-                                        if let Some(dataset_name) = &self.current_dataset {
-                                            if let Some(group) = self.dataset_groups.get(dataset_name) {
-                                                if let Some(series) = group.series.iter().find(|s| s.search_result.series_id == *series_id) {
-                                                    return Ok(Some(vec![series.clone()]));
-                                                }
-                                            }
+                            if self.current_level == ViewLevel::Features {
+                                // Toggle between search and number input modes
+                                self.number_input_mode = !self.number_input_mode;
+                                self.number_input_buffer.clear();
+                                eprintln!("[DEBUG {}] 🔄 Toggled input mode: {} mode", 
+                                    chrono::Utc::now().format("%H:%M:%S"), 
+                                    if self.number_input_mode { "Number" } else { "Search" });
+                            } else {
+                                // For other levels, same as Enter
+                                match self.current_level {
+                                    ViewLevel::Dataset => {
+                                        if !self.dataset_list.is_empty() {
+                                            self.enter_dataset().await?;
                                         }
+                                    }
+                                    ViewLevel::Series => {
+                                        if !self.series_list.is_empty() {
+                                            self.enter_series().await?;
+                                        }
+                                    }
+                                    ViewLevel::Features => {
+                                        // Already handled above
                                     }
                                 }
                             }
@@ -868,6 +959,11 @@ impl InteractiveFinder {
                                 if new_index != self.selected_index {
                                     self.selected_index = new_index;
                                     self.list_state.select(Some(self.selected_index));
+                                    
+                                    // Auto-load cached features
+                                    if let Some(feature_name) = self.get_current_feature_name() {
+                                        self.try_auto_load_cached_feature(&feature_name).await;
+                                    }
                                 }
                             } else {
                                 if self.selected_index > 0 {
@@ -882,6 +978,11 @@ impl InteractiveFinder {
                                 if new_index != self.selected_index {
                                     self.selected_index = new_index;
                                     self.list_state.select(Some(self.selected_index));
+                                    
+                                    // Auto-load cached features
+                                    if let Some(feature_name) = self.get_current_feature_name() {
+                                        self.try_auto_load_cached_feature(&feature_name).await;
+                                    }
                                 }
                             } else {
                                 let max_index = match self.current_level {
@@ -897,6 +998,20 @@ impl InteractiveFinder {
                         }
                         KeyCode::F(1) => {
                             self.show_preview = !self.show_preview;
+                        }
+                        KeyCode::F(2) => {
+                            if self.current_level == ViewLevel::Dataset {
+                                // Cycle through sorting modes
+                                self.dataset_sort_mode = match self.dataset_sort_mode {
+                                    DatasetSortMode::Name => DatasetSortMode::SeriesCount,
+                                    DatasetSortMode::SeriesCount => DatasetSortMode::RecordCount,
+                                    DatasetSortMode::RecordCount => DatasetSortMode::Name,
+                                };
+                                // Re-sort the list and reset selection
+                                self.sort_dataset_list();
+                                self.selected_index = 0;
+                                self.list_state.select(Some(self.selected_index));
+                            }
                         }
                         _ => {}
                     }
@@ -972,7 +1087,7 @@ impl InteractiveFinder {
         
         // Update dataset list for display
         self.dataset_list = self.dataset_groups.keys().cloned().collect();
-        self.dataset_list.sort();
+        self.sort_dataset_list();
         
         // Reset to dataset level if we have new results
         if self.current_level != ViewLevel::Dataset {
@@ -991,6 +1106,29 @@ impl InteractiveFinder {
               self.dataset_groups.len(),
               self.dataset_groups.values().map(|g| g.series.len()).sum::<usize>());
         Ok(())
+    }
+    
+    /// Sort the dataset list according to the current sort mode
+    fn sort_dataset_list(&mut self) {
+        match self.dataset_sort_mode {
+            DatasetSortMode::Name => {
+                self.dataset_list.sort();
+            }
+            DatasetSortMode::SeriesCount => {
+                self.dataset_list.sort_by(|a, b| {
+                    let a_count = self.dataset_groups.get(a).map(|g| g.series.len()).unwrap_or(0);
+                    let b_count = self.dataset_groups.get(b).map(|g| g.series.len()).unwrap_or(0);
+                    b_count.cmp(&a_count) // Descending order (most series first)
+                });
+            }
+            DatasetSortMode::RecordCount => {
+                self.dataset_list.sort_by(|a, b| {
+                    let a_records = self.dataset_groups.get(a).map(|g| g.total_records).unwrap_or(0);
+                    let b_records = self.dataset_groups.get(b).map(|g| g.total_records).unwrap_or(0);
+                    b_records.cmp(&a_records) // Descending order (most records first)
+                });
+            }
+        }
     }
     
     async fn enter_dataset(&mut self) -> Result<()> {
@@ -1181,6 +1319,8 @@ impl InteractiveFinder {
         self.current_dataset = None;
         self.current_series = None;
         self.current_features = None;
+        // Re-sort the dataset list according to current sort mode
+        self.sort_dataset_list();
         self.selected_index = 0;
         self.list_state.select(Some(0));
         Ok(())
@@ -1232,15 +1372,40 @@ impl InteractiveFinder {
                 format!(" Search > {} ({} {}) ", dataset, Self::format_number(result_count), level_name.to_lowercase())
             }
         } else {
-            format!(" Search ({} {}) ", Self::format_number(result_count), level_name.to_lowercase())
+            // Show sort mode when at dataset level
+            let sort_indicator = if self.current_level == ViewLevel::Dataset {
+                match self.dataset_sort_mode {
+                    DatasetSortMode::Name => " [Sort: Name]",
+                    DatasetSortMode::SeriesCount => " [Sort: Series Count]",
+                    DatasetSortMode::RecordCount => " [Sort: Record Count]",
+                }
+            } else {
+                ""
+            };
+            format!(" Search ({} {}){} ", Self::format_number(result_count), level_name.to_lowercase(), sort_indicator)
         };
         
-        let input = Paragraph::new(self.query.as_str())
-            .style(Style::default().fg(Color::Yellow))
+        // Determine what to display in the input field
+        let (input_text, input_style, input_title) = if self.number_input_mode && self.current_level == ViewLevel::Features {
+            // Number input mode
+            let display_text = if self.number_input_buffer.is_empty() {
+                "Type feature number + Space".to_string()
+            } else {
+                format!("Feature #{}", self.number_input_buffer)
+            };
+            let mode_title = format!("{} [NUMBER MODE]", title);
+            (display_text, Style::default().fg(Color::Green), mode_title)
+        } else {
+            // Regular search mode
+            (self.query.clone(), Style::default().fg(Color::Yellow), title)
+        };
+        
+        let input = Paragraph::new(input_text.as_str())
+            .style(input_style)
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title(title)
+                    .title(input_title)
             );
         f.render_widget(input, left_chunks[0]);
         
@@ -1300,7 +1465,7 @@ impl InteractiveFinder {
                             // Spacer - just empty
                             "".to_string()
                         } else {
-                            // Regular feature - no extra prefix needed as it's already formatted
+                            // Regular feature - no automatic prefixes
                             feature.clone()
                         };
                         
@@ -1333,9 +1498,15 @@ impl InteractiveFinder {
         
         // Status line with hierarchical navigation help
         let help_text = match self.current_level {
-            ViewLevel::Dataset => "↑/↓: navigate, Enter: enter dataset, F1: toggle preview, Esc: quit",
+            ViewLevel::Dataset => "↑/↓: navigate, Enter: enter dataset, F1: toggle preview, F2: toggle sort, Esc: quit",
             ViewLevel::Series => "↑/↓: navigate, Enter: view features, F1: toggle preview, Esc: back to datasets", 
-            ViewLevel::Features => "↑/↓: navigate features, F1: toggle preview, Esc: back to series",
+            ViewLevel::Features => {
+                if self.number_input_mode {
+                    "Number + Space: select feature, Tab: toggle search mode, Enter: load data, Esc: back"
+                } else {
+                    "↑/↓: navigate, Tab: toggle number mode, Enter: load data, F1: toggle preview, Esc: back"
+                }
+            },
         };
         let status = Paragraph::new(help_text)
             .style(Style::default().bg(Color::DarkGray).fg(Color::White));
@@ -1704,6 +1875,57 @@ impl InteractiveFinder {
             self.start_feature_data_fetch(feature_name)
         } else {
             false
+        }
+    }
+    
+    /// Get the index of the nth selectable feature (0-based)
+    fn get_nth_selectable_feature(&self, n: usize) -> Option<usize> {
+        let mut selectable_count = 0;
+        
+        for (i, feature) in self.features_list.iter().enumerate() {
+            if self.is_feature_selectable(i) {
+                if selectable_count == n {
+                    return Some(i);
+                }
+                selectable_count += 1;
+            }
+        }
+        
+        None
+    }
+    
+    /// Get the current feature name at the selected index
+    fn get_current_feature_name(&self) -> Option<String> {
+        if let Some(feature_text) = self.features_list.get(self.selected_index) {
+            // Extract feature name from the display text
+            // Format is usually "🔧 feature_name [X records]" or similar
+            let parts: Vec<&str> = feature_text.split_whitespace().collect();
+            if parts.len() >= 2 {
+                // Get the feature name (second part after emoji)
+                let feature_name = parts[1];
+                // Remove any brackets or metadata
+                let clean_name = feature_name.split('[').next().unwrap_or(feature_name);
+                return Some(clean_name.to_string());
+            }
+        }
+        None
+    }
+    
+    /// Try to auto-load a cached feature without requiring Enter key
+    async fn try_auto_load_cached_feature(&mut self, feature_name: &str) {
+        if let Some(series_id) = &self.current_series {
+            let cache_key = format!("{}::{}", series_id, feature_name);
+            
+            // Check if data is already cached
+            if self.feature_data_cache.contains_key(&cache_key) {
+                // Data is already cached, no action needed - it will display automatically
+                eprintln!("[DEBUG {}] 🎯 Auto-displaying cached feature: {}", 
+                    chrono::Utc::now().format("%H:%M:%S"), feature_name);
+            } else {
+                // Data not cached - could trigger fetch here if desired
+                eprintln!("[DEBUG {}] 🔄 Feature not cached, press Enter to load: {}", 
+                    chrono::Utc::now().format("%H:%M:%S"), feature_name);
+            }
         }
     }
 }
