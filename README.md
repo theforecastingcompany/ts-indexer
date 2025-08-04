@@ -44,6 +44,8 @@ TS-Indexer is designed to make 3-10 TB of time-series data stored in S3 blazingl
 
 ## Prerequisites
 
+This has only been tested on MacOS!
+
 ### System Requirements
 - **Rust** 1.70+ (install from [rustup.rs](https://rustup.rs/))
 - **DuckDB** development libraries
@@ -54,20 +56,6 @@ TS-Indexer is designed to make 3-10 TB of time-series data stored in S3 blazingl
 **macOS (with Homebrew):**
 ```bash
 brew install duckdb
-```
-
-**Ubuntu/Debian:**
-```bash
-sudo apt-get update
-sudo apt-get install libduckdb-dev
-```
-
-**From source:**
-```bash
-git clone https://github.com/duckdb/duckdb.git
-cd duckdb
-make
-sudo make install
 ```
 
 ### AWS Configuration
